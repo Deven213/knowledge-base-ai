@@ -1,0 +1,37 @@
+# Dependencies & build output
+node_modules/
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Local data: SQLite database (documents, embeddings, sessions, encrypted OAuth tokens) and the
+# downloaded embedding model cache
+data/
+data-test/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# Secrets — never commit (.env.example with names only is kept)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+
+# Deployment / tooling state
+.vercel/
+.claude/
+
+# Logs & OS files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
