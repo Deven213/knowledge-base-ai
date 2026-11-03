@@ -4,7 +4,10 @@
 export const SESSION_COOKIE = "kb_session";
 
 /** The product (admin, app entry, chat, settings). Everything else — landing page, /login — is public. */
-export const PROTECTED_PAGE_PREFIXES = ["/admin", "/app", "/chat", "/settings"] as const;
+export const PROTECTED_PAGE_PREFIXES = ["/admin", "/app", "/chat", "/settings", "/platform", "/change-password"] as const;
+
+/** Where someone who still has a temporary password is sent, and the only product page they may open. */
+export const PASSWORD_CHANGE_PATH = "/change-password";
 
 /** The only API routes reachable without a session: signing in and out. */
 const PUBLIC_API_PREFIXES = ["/api/auth/"] as const;

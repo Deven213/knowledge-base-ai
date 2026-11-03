@@ -1,32 +1,31 @@
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { toDocumentDTO } from "@/server/dto";
-import { internalError, jsonError, rejectCrossSite, requireFeature } from "@/server/http";
+import { internalError, jsonError, requireFeature } from "@/server/http";
 import { SUPPORTED_EXTENSIONS } from "@/server/knowledge/extract";
 import { ingestDocument } from "@/server/knowledge/ingest";
-import { getServices } from "@/server/services";
+import { getTenantServices } from "@/server/services";
+import { withTenant } from "@/server/tenant";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export const GET = withTenant("documents:read", async (_request, tenant) => {
   const featureOff = requireFeature("knowledge_base");
   if (featureOff) return featureOff;
   try {
-    const { documents, embedder } = getServices();
+    const { documents, embedder } = getTenantServices(tenant);
     return NextResponse.json({ documents: documents.list().map((d) => toDocumentDTO(d, embedder.modelId)) });
   } catch (err) {
     return internalError("GET /api/documents", err);
   }
-}
+});
 
-export async function POST(request: Request) {
-  const crossSite = rejectCrossSite(request);
-  if (crossSite) return crossSite;
+export const POST = withTenant("documents:write", async (request, tenant) => {
   const featureOff = requireFeature("documents");
   if (featureOff) return featureOff;
   try {
-    const services = getServices();
+    const services = getTenantServices(tenant);
     const maxBytes = services.config.MAX_UPLOAD_MB * 1024 * 1024;
 
     const declaredLength = Number(request.headers.get("content-length") ?? 0);
@@ -63,4 +62,4 @@ export async function POST(request: Request) {
   } catch (err) {
     return internalError("POST /api/documents", err);
   }
-}
+});

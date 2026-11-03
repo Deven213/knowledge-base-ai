@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { DocumentRepository } from "@/server/db/repositories";
 import { FEATURES, FEATURE_KEYS, featureDefinition, resolveFeatures, type FeatureKey } from "@/lib/features";
 import { ingestDocument } from "@/server/knowledge/ingest";
 import { SqliteVectorStore } from "@/server/knowledge/vector-store";
@@ -7,7 +8,7 @@ import { ProviderConfigService } from "@/server/llm/resolve";
 import type { LLMProvider, LLMRequest } from "@/server/llm/types";
 import { answerQuestion, KNOWLEDGE_BASE_DISABLED_ANSWER } from "@/server/rag/answer";
 import { prepareAttachments } from "@/server/rag/attachments";
-import { FakeEmbedder, memoryDb, promptText, testConfig } from "./helpers";
+import { FakeEmbedder, memoryDb, promptText, TEST_ORG, testConfig } from "./helpers";
 
 const state = (states: ReturnType<typeof resolveFeatures>, key: FeatureKey) => states.find((s) => s.key === key)!;
 
@@ -119,8 +120,8 @@ describe("answering with the Knowledge Base disabled", () => {
   async function setup() {
     const db = memoryDb();
     const embedder = new FakeEmbedder(["battery", "warranty", "months"]);
-    const vectorStore = new SqliteVectorStore(db);
-    await ingestDocument({ db, embedder, vectorStore }, { filename: "kb.txt", buffer: Buffer.from("Battery warranty: 12 months.") });
+    const vectorStore = new SqliteVectorStore(db, TEST_ORG);
+    await ingestDocument({ db, embedder, vectorStore, documents: new DocumentRepository(db, TEST_ORG) }, { filename: "kb.txt", buffer: Buffer.from("Battery warranty: 12 months.") });
     const providerConfig = new ProviderConfigService(db, testConfig({ GEMINI_API_KEY: "AIza-test-key-12345678", GEMINI_MODEL: "g" }));
     const generate = vi.fn(async (_req: LLMRequest) => ({ text: "ok" }));
     const provider: LLMProvider = { id: "gemini", generate };

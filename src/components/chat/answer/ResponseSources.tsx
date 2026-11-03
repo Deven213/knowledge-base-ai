@@ -58,7 +58,7 @@ export function shortCitationLabel(c: CitationDTO | undefined): string {
 
 const ICONS: Record<SourceKind, LucideIcon> = { website: Globe, google_drive: HardDrive, onedrive: Cloud, attachment: Paperclip, document: FileText };
 
-/** Compact, clickable source reference used under a section. */
+/** Compact, clickable source reference: icon, document and page. Opens the passage it came from. */
 export function SourceChip({ citation, onClick }: { citation: CitationDTO; onClick: () => void }) {
   const d = describeCitation(citation);
   const Icon = ICONS[d.kind];
@@ -67,40 +67,36 @@ export function SourceChip({ citation, onClick }: { citation: CitationDTO; onCli
     <button
       type="button"
       onClick={onClick}
-      title={label}
-      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-navy-600 bg-navy-800 px-2.5 py-1 text-xs text-slate-300 transition-colors hover:border-orange-400/60 hover:text-orange-100 focus-visible:outline-2 focus-visible:outline-orange-400"
+      title={`Show the passage: ${label}`}
+      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[13px] text-slate-700 transition-colors hover:border-brand-600 hover:bg-brand-50 hover:text-brand-700 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-600"
     >
-      <Icon className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
+      <Icon className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden />
       <span className="truncate">{label}</span>
     </button>
   );
 }
 
-/** The answer's source cards (grouped by document/page), inside the same response. */
-export function ResponseSources({ sources, citations, onCite }: { sources: AISource[]; citations: CitationDTO[]; onCite: (n: number) => void }) {
+/** The answer's references, one chip per document and page range, always visible. Built from retrieval, never from the model. */
+export function ReferenceList({ sources, citations, onCite }: { sources: AISource[]; citations: CitationDTO[]; onCite: (n: number) => void }) {
   if (sources.length === 0) return null;
   return (
-    <ul className="grid gap-2 sm:grid-cols-2">
-      {sources.map((s) => {
-        const first = citations.find((c) => c.index === s.citationIndexes[0]);
-        const d = first
-          ? describeCitation(first)
-          : describeCitation({ filename: s.documentName, pageStart: s.pageStart, pageEnd: s.pageEnd, source: s.origin });
-        const Icon = ICONS[d.kind];
+    <ul className="flex flex-wrap gap-1.5">
+      {sources.map((src) => {
+        const first = citations.find((c) => c.index === src.citationIndexes[0]);
+        const citation: CitationDTO = first ?? {
+          index: src.citationIndexes[0] ?? 0,
+          source: src.origin,
+          documentId: src.documentId,
+          filename: src.documentName,
+          pageStart: src.pageStart,
+          pageEnd: src.pageEnd,
+          excerpt: src.excerpt ?? "",
+          score: null,
+          cited: true,
+        };
         return (
-          <li key={`${s.documentId ?? s.documentName}-${s.pageStart}-${s.pageEnd}`} className="min-w-0">
-            <button
-              type="button"
-              onClick={() => onCite(s.citationIndexes[0]!)}
-              className="h-full w-full rounded-xl border border-navy-700 bg-navy-850 px-3 py-2.5 text-left transition-colors hover:border-orange-400/50 hover:bg-navy-800 focus-visible:outline-2 focus-visible:outline-orange-400"
-            >
-              <p className="flex items-center gap-1.5 text-sm font-semibold text-slate-100">
-                <Icon className="h-4 w-4 shrink-0 text-orange-300" aria-hidden />
-                <span className="truncate">{d.title}</span>
-              </p>
-              {d.detail && <p className="mt-0.5 truncate text-xs text-slate-400">{d.detail}</p>}
-              {s.excerpt && <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-slate-400 italic">“{s.excerpt}”</p>}
-            </button>
+          <li key={`${src.documentId ?? src.documentName}-${src.pageStart}-${src.pageEnd}`} className="min-w-0 max-w-full">
+            <SourceChip citation={citation} onClick={() => onCite(src.citationIndexes[0]!)} />
           </li>
         );
       })}

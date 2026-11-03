@@ -11,10 +11,33 @@ next-env.d.ts
 # downloaded embedding model cache
 data/
 data-test/
+# Throwaway database, audio, logs and test sign-ins made by `npm run mock:start` (scripts/mock-consultations.mjs)
+data-mock/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.db
+
+# The same, if a copy ever lands outside data/: other database file names, backups, dumps, and the private audio folder
+*.sqlite3
+*.sqlite-journal
+*.db-journal
+*.db-wal
+*.db-shm
+*.bak
+*.dump
+*.sql
+backups/
+consultation-audio/
+
+# Audio recordings. Doctor consultations are health information: a recording must never be committed
+*.webm
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.ogg
+*.flac
 
 # Secrets — never commit (.env.example with names only is kept)
 .env
@@ -25,6 +48,15 @@ data-test/
 *.p12
 *.pfx
 *.crt
+# Throwaway sign-ins written by the mock-testing launcher, and other credential files
+CREDENTIALS*.txt
+*creds*.json
+secrets.json
+*.secrets.json
+
+# Screenshots and scratch output made while testing (the app has no images of its own at the project root)
+/screenshots/
+/shots/
 
 # Deployment / tooling state
 .vercel/

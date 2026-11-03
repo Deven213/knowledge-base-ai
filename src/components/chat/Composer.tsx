@@ -15,6 +15,7 @@ import {
 import { IMAGE_UNSUPPORTED_MESSAGE } from "@/lib/capabilities";
 import { useFeatures } from "../features/FeatureProvider";
 import { formatBytes } from "../ui";
+import { VoiceInputButton } from "./VoiceInputButton";
 
 // ── Pending attachments (client-side state; nothing is uploaded until Send) ──
 
@@ -249,6 +250,10 @@ interface ComposerProps {
   placeholder?: string;
   /** Shown just above the input (e.g. which source the question will use). */
   header?: React.ReactNode;
+  /** Show the microphone (voice → text in this box). */
+  voiceInputEnabled?: boolean;
+  /** Language hint for transcription. */
+  voiceLanguage?: string;
   footer?: React.ReactNode;
 }
 
@@ -263,7 +268,26 @@ export function Composer({
   placeholder = "Ask anything about your documents...",
   header,
   footer,
+  voiceInputEnabled = false,
+  voiceLanguage = "en",
 }: ComposerProps) {
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
+  /** Adds the transcript to whatever is already typed; the user reviews it and presses Send. */
+  function insertTranscript(text: string) {
+    const current = valueRef.current.trimEnd();
+    onChange(current ? `${current} ${text}` : text);
+    // After React has rendered the new value: focus the box with the cursor at the end.
+    setTimeout(() => {
+      const el = textareaRef.current;
+      el?.focus();
+      el?.setSelectionRange(el.value.length, el.value.length);
+    }, 0);
+  }
   const features = useFeatures();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const docInput = useRef<HTMLInputElement>(null);
@@ -316,6 +340,14 @@ export function Composer({
               ))}
             </ul>
             <button type="button" onClick={attachments.dismissErrors} aria-label="Dismiss" className="rounded p-0.5 hover:bg-red-100">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+        {voiceError && (
+          <div role="alert" className="mb-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <span className="flex-1">{voiceError}</span>
+            <button type="button" onClick={() => setVoiceError(null)} aria-label="Dismiss" className="rounded p-0.5 hover:bg-amber-100">
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -376,6 +408,9 @@ export function Composer({
               placeholder={placeholder}
               className="max-h-[200px] min-h-9 flex-1 resize-none bg-transparent px-1 py-1.5 text-[15px] leading-6 placeholder:text-slate-400 focus:outline-none"
             />
+            {voiceInputEnabled && !busy && (
+              <VoiceInputButton language={voiceLanguage} onTranscript={insertTranscript} onError={setVoiceError} />
+            )}
             {busy ? (
               <button
                 type="button"

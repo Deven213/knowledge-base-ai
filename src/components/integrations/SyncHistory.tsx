@@ -1,13 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { ExternalLink, History } from "lucide-react";
+import { History } from "lucide-react";
 import { api } from "@/lib/api";
 import type { SyncRunDetailDTO, SyncRunSummaryDTO } from "@/lib/integrations";
-import { Badge, EmptyState, Modal, Spinner } from "../ui";
-import { formatDateTime, RunCounts, RunStatusBadge } from "./parts";
-
-const OUTCOME_TONE = { added: "green", updated: "blue", skipped: "slate", failed: "red" } as const;
+import { EmptyState, Modal, Spinner } from "../ui";
+import { formatDateTime, RunCounts, RunItem, RunStatusBadge } from "./parts";
 
 /** One integration's sync runs (newest first), with a per-run details view. */
 export function SyncHistory({ runs, unit }: { runs: SyncRunSummaryDTO[]; unit: string }) {
@@ -65,18 +63,7 @@ export function SyncHistory({ runs, unit }: { runs: SyncRunSummaryDTO[]; unit: s
             <ul className="max-h-80 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
               {detail.items.length === 0 && <li className="px-3 py-4 text-center text-sm text-slate-500">No items.</li>}
               {detail.items.map((item, idx) => (
-                <li key={idx} className="px-3 py-2 text-sm">
-                  <div className="flex items-center gap-2">
-                    <Badge tone={OUTCOME_TONE[item.outcome]}>{item.outcome}</Badge>
-                    <span className="min-w-0 flex-1 truncate" title={item.name}>{item.name}</span>
-                    {item.url && (
-                      <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-slate-700" aria-label={`Open ${item.name}`}>
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </a>
-                    )}
-                  </div>
-                  {item.message && <p className={`mt-0.5 text-xs ${item.outcome === "failed" ? "text-red-600" : "text-slate-500"}`}>{item.message}</p>}
-                </li>
+                <RunItem key={idx} item={item} />
               ))}
             </ul>
           </div>

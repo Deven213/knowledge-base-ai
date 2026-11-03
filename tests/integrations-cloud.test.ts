@@ -7,7 +7,7 @@ import { IntegrationAuthError, IntegrationError } from "@/server/integrations/er
 import { buildAuthorizeUrl, createPkce, oauthStatus, statesMatch, TokenStore } from "@/server/integrations/oauth";
 import { IntegrationRepository } from "@/server/integrations/repository";
 import { IntegrationService } from "@/server/integrations/service";
-import { FakeEmbedder, memoryDb, testConfig } from "./helpers";
+import { FakeEmbedder, memoryDb, TEST_ORG, testConfig } from "./helpers";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const OAUTH_CONFIG: Partial<AppConfig> = {
@@ -41,7 +41,7 @@ function fakeDrive(files: CloudFile[], contents: Record<string, string>) {
 
 function setup(opts: { drive?: CloudDrive; config?: Partial<AppConfig>; flags?: Record<string, boolean>; token?: () => Promise<string> } = {}) {
   const db = memoryDb();
-  const deps = { db, embedder: new FakeEmbedder(["refund", "policy", "shipping", "warranty"]), vectorStore: new SqliteVectorStore(db), chunkOptions: { chunkSize: 200, overlap: 0 } };
+  const deps = { db, embedder: new FakeEmbedder(["refund", "policy", "shipping", "warranty"]), vectorStore: new SqliteVectorStore(db, TEST_ORG), documents: new DocumentRepository(db, TEST_ORG), orgId: TEST_ORG, chunkOptions: { chunkSize: 200, overlap: 0 } };
   const drive = opts.drive ?? fakeDrive([], {}).drive;
   const service = new IntegrationService({
     ...deps,
@@ -50,7 +50,7 @@ function setup(opts: { drive?: CloudDrive; config?: Partial<AppConfig>; flags?: 
     getAccessToken: opts.token,
     isFeatureEnabled: (key) => opts.flags?.[key] ?? true,
   });
-  return { db, service, docs: new DocumentRepository(db) };
+  return { db, service, docs: new DocumentRepository(db, TEST_ORG) };
 }
 
 const file = (id: string, name: string, modifiedAt = "2026-01-01T00:00:00Z", extra: Partial<CloudFile> = {}): CloudFile => ({
@@ -310,7 +310,7 @@ describe("OAuth", () => {
 describe("TokenStore", () => {
   function store(config: Partial<AppConfig> = OAUTH_CONFIG) {
     const db = memoryDb();
-    const repo = new IntegrationRepository(db);
+    const repo = new IntegrationRepository(db, TEST_ORG);
     const row = repo.getByType("onedrive");
     return { repo, row, tokens: new TokenStore(repo, testConfig(config)) };
   }

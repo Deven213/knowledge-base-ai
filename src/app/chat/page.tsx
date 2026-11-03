@@ -8,10 +8,12 @@ import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { useFeatures } from "@/components/features/FeatureProvider";
 import { Composer, useAttachments } from "@/components/chat/Composer";
 import { describeSource, KnowledgeSourcePicker, SourceIcon } from "@/components/chat/KnowledgeSourcePicker";
+import { UserDetailsModal } from "@/components/chat/UserDetailsModal";
 import { AssistantBubble, FailedAssistantBubble, PendingAssistantBubble, UserBubble } from "@/components/chat/MessageBubble";
 import { APP_NAME } from "@/components/Logo";
 import { Alert, Modal, Spinner } from "@/components/ui";
 import { api } from "@/lib/api";
+import { loadProfile, markPrompted, saveProfile, wasPrompted, type UserChatProfile } from "@/lib/chat/user-chat-profile";
 import { ALL_SCOPE, scopeKey, sourceCountLabel, type KnowledgeScope, type KnowledgeSourceDTO } from "@/lib/knowledge-scope";
 import { DEFAULT_LANGUAGE, LANGUAGE_CODES } from "@/lib/languages";
 import type { AISettingsDTO, AttachmentDTO, ConversationSummaryDTO, MessageDTO } from "@/lib/types";
@@ -80,6 +82,26 @@ export default function ChatPage() {
   const features = useFeatures();
   const kbAvailable = features.knowledge_base;
   const [language, setLanguage] = useState(DEFAULT_LANGUAGE);
+  /** Optional details for this browser session (sessionStorage only; never sent to the AI). */
+  const [profile, setProfile] = useState<UserChatProfile | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  /** Voice features available to this workspace (nothing is generated until the user asks). */
+  const [voice, setVoice] = useState<{ tts: boolean; stt: boolean }>({ tts: false, stt: false });
+  useEffect(() => {
+    api
+      .voiceSettings()
+      .then((v) => setVoice({ tts: v.tts.enabled, stt: v.stt.enabled }))
+      .catch(() => setVoice({ tts: false, stt: false }));
+  }, []);
+
+  // First visit in this session: let the chat render, then offer the optional details sheet.
+  useEffect(() => {
+    const saved = loadProfile();
+    if (saved) queueMicrotask(() => setProfile(saved));
+    if (wasPrompted()) return;
+    const t = setTimeout(() => setDetailsOpen(true), 400);
+    return () => clearTimeout(t);
+  }, []);
 
   // New answers start in the language last chosen on any response (per browser; English by default).
   // Read after mount to keep server and client HTML identical.
@@ -100,6 +122,20 @@ export default function ChatPage() {
       /* non-essential */
     }
   }
+  function closeDetails() {
+    markPrompted(); // not shown again in this session (it can be reopened from below the input)
+    setDetailsOpen(false);
+    document.getElementById("chat-input")?.focus(); // the input is outside the sheet, so it can take focus right away
+  }
+
+  function saveDetails(next: UserChatProfile) {
+    saveProfile(next);
+    setProfile(Object.keys(next).length ? next : null);
+    // The only detail used by the app: a preferred language becomes the default answer language.
+    if (next.preferredLanguage) changeLanguage(next.preferredLanguage);
+    closeDetails();
+  }
+
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<string[] | null>(null);
@@ -492,6 +528,7 @@ export default function ChatPage() {
                   // A language change updates this same message in place; nothing is added to the chat.
                   onMessageUpdate={(updated) => setMessages((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))}
                   onLanguageChosen={changeLanguage}
+                  ttsEnabled={voice.tts}
                 />
               ),
             )}
@@ -519,6 +556,8 @@ export default function ChatPage() {
             <div ref={endRef} />
           </div>
         </div>
+
+        <UserDetailsModal open={detailsOpen} initial={profile} onSave={saveDetails} onDismiss={closeDetails} />
 
         <Modal
           open={!!scopeChange}
@@ -552,6 +591,8 @@ export default function ChatPage() {
           busy={!!pending}
           imageInputSupported={activeProvider?.capabilities.imageInput ?? true}
           placeholder={kbAvailable ? sourceText.placeholder : undefined}
+          voiceInputEnabled={voice.stt}
+          voiceLanguage={language}
           header={
             kbAvailable && sources ? (
               <p className="mb-1.5 flex min-w-0 items-center gap-1.5 px-1 text-xs text-slate-500" aria-live="polite">
@@ -562,7 +603,10 @@ export default function ChatPage() {
           }
           footer={
             <p className="mt-1.5 text-center text-[11px] text-slate-400">
-              {APP_NAME} · Answers are generated from your documents and may contain mistakes. Check the cited sources.
+              {APP_NAME} · Answers are generated from your documents and may contain mistakes. Check the cited sources. ·{" "}
+              <button type="button" onClick={() => setDetailsOpen(true)} className="font-medium text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline">
+                {profile ? "Edit your details" : "Add your details"}
+              </button>
             </p>
           }
         />

@@ -3,7 +3,8 @@ import dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import { IntegrationError } from "../errors";
+import { safeErrorMessage } from "../../security/redact";
+import { FetchError, IntegrationError } from "../errors";
 
 // SSRF-safe HTTP(S) fetching for the website scraper.
 // - Only http/https to public hosts on standard web ports; no credentials in URLs.
@@ -130,7 +131,7 @@ function requestOnce(url: URL, timeoutMs: number, maxBytes: number): Promise<{ s
         const declared = Number(res.headers["content-length"] ?? 0);
         if (declared > maxBytes) {
           res.destroy();
-          return reject(new IntegrationError(`The response is larger than ${Math.round(maxBytes / 1024 / 1024)} MB.`));
+          return reject(new FetchError(`The response is larger than ${Math.round(maxBytes / 1024 / 1024)} MB.`, "too_large", status, `Content-Length ${declared} exceeds the ${maxBytes}-byte limit.`));
         }
         const parts: Buffer[] = [];
         let size = 0;
@@ -138,7 +139,7 @@ function requestOnce(url: URL, timeoutMs: number, maxBytes: number): Promise<{ s
           size += chunk.length;
           if (size > maxBytes) {
             res.destroy();
-            reject(new IntegrationError(`The response is larger than ${Math.round(maxBytes / 1024 / 1024)} MB.`));
+            reject(new FetchError(`The response is larger than ${Math.round(maxBytes / 1024 / 1024)} MB.`, "too_large", status, `The body passed the ${maxBytes}-byte limit.`));
           } else parts.push(chunk);
         });
         res.on("end", () => resolve({ status, headers: res.headers, body: Buffer.concat(parts) }));
@@ -157,14 +158,16 @@ function requestOnce(url: URL, timeoutMs: number, maxBytes: number): Promise<{ s
 function friendlyNetworkError(err: unknown, url: URL): IntegrationError {
   if (err instanceof IntegrationError) return err;
   const code = (err as { code?: string }).code;
-  if (code === "EBLOCKEDADDRESS") return new IntegrationError(`${url.hostname} resolves to a private or internal address, which can't be crawled.`);
-  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return new IntegrationError(`The website ${url.hostname} could not be found.`);
-  if (code === "ETIMEDOUT") return new IntegrationError(`${url.hostname} did not respond in time.`);
-  if (code === "ECONNREFUSED") return new IntegrationError(`${url.hostname} refused the connection.`);
+  // The original error, for the run details (anything key-like is removed).
+  const detail = `${code ?? "ERROR"}: ${safeErrorMessage(err)}`;
+  if (code === "EBLOCKEDADDRESS") return new FetchError(`${url.hostname} resolves to a private or internal address, which can't be crawled.`, "network", undefined, detail);
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return new FetchError(`The website ${url.hostname} could not be found.`, "network", undefined, detail);
+  if (code === "ETIMEDOUT") return new FetchError(`${url.hostname} did not respond in time.`, "timeout", undefined, detail);
+  if (code === "ECONNREFUSED") return new FetchError(`${url.hostname} refused the connection.`, "network", undefined, detail);
   if (code?.startsWith("ERR_TLS") || code === "CERT_HAS_EXPIRED" || code === "DEPTH_ZERO_SELF_SIGNED_CERT") {
-    return new IntegrationError(`${url.hostname} has an invalid security certificate.`);
+    return new FetchError(`${url.hostname} has an invalid security certificate.`, "network", undefined, detail);
   }
-  return new IntegrationError(`Could not load ${url.href}.`);
+  return new FetchError(`Could not load ${url.href}.`, "network", undefined, detail);
 }
 
 /** GET a public URL safely, following up to `maxRedirects` validated redirects. */
@@ -179,14 +182,21 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOptions = {}): Pr
       throw friendlyNetworkError(err, url);
     }
     if (res.status >= 300 && res.status < 400 && res.headers.location) {
-      if (hop >= maxRedirects) throw new IntegrationError(`Too many redirects from ${url.href}.`);
+      if (hop >= maxRedirects) throw new FetchError(`Too many redirects from ${url.href}.`, "redirect", res.status, `More than ${maxRedirects} redirects.`);
       const next = validatePublicUrl(new URL(res.headers.location, url).href);
       const refused = opts.checkRedirect?.(next);
-      if (refused) throw new IntegrationError(refused);
+      if (refused) throw new FetchError(refused, "redirect", res.status, `HTTP ${res.status} redirect to ${next.hostname}.`);
       url = next;
       continue;
     }
-    if (res.status >= 400) throw new IntegrationError(`The website returned HTTP ${res.status}${res.status === 403 ? " (access forbidden)" : res.status === 404 ? " (page not found)" : ""}.`);
+    if (res.status >= 400) {
+      throw new FetchError(
+        `The website returned HTTP ${res.status}${res.status === 403 ? " (access forbidden)" : res.status === 404 ? " (page not found)" : ""}.`,
+        "http_error",
+        res.status,
+        `HTTP ${res.status} ${res.status === 404 ? "Not Found" : res.status === 403 ? "Forbidden" : "response"}`,
+      );
+    }
     return { url: url.href, status: res.status, contentType: String(res.headers["content-type"] ?? "").toLowerCase(), body: res.body };
   }
 }

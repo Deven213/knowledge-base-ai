@@ -2,17 +2,19 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isFeatureKey } from "@/lib/features";
 import { FeatureDependencyError, getFeatureFlagService } from "@/server/features/service";
-import { internalError, jsonError, rejectCrossSite, zodMessage } from "@/server/http";
+import { internalError, jsonError, zodMessage } from "@/server/http";
+import { withTenant } from "@/server/tenant";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({ enabled: z.boolean() }).strict();
 
-/** Turns one feature on or off. Enabling is refused (409) while its dependency is unavailable. */
-export async function PUT(request: Request, ctx: { params: Promise<{ key: string }> }) {
-  const crossSite = rejectCrossSite(request);
-  if (crossSite) return crossSite;
+/**
+ * Turns one feature on or off. Feature switches are platform-wide (they change what EVERY customer sees),
+ * so only a platform administrator may change them. Enabling is refused (409) while its dependency is unavailable.
+ */
+export const PUT = withTenant<{ key: string }>("platform:admin", async (request, _tenant, ctx) => {
   try {
     const { key } = await ctx.params;
     if (!isFeatureKey(key)) return jsonError(404, "Unknown feature.");
@@ -29,4 +31,4 @@ export async function PUT(request: Request, ctx: { params: Promise<{ key: string
   } catch (err) {
     return internalError("PUT /api/features/[key]", err);
   }
-}
+});

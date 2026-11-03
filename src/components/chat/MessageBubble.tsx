@@ -61,21 +61,23 @@ export function UserBubble({
 }
 
 /**
- * One assistant message = one StructuredAIResponse container (title, language menu, summary,
- * sections, sources, footer). Nothing inside it is rendered as a separate chat message.
+ * One assistant message = one StructuredAIResponse container (a compact clinical note: title, language menu, summary,
+ * key points, caution, reference, "More details", footer). Nothing inside it is rendered as a separate chat message.
  */
 export function AssistantBubble({
   message,
   onMessageUpdate,
   onLanguageChosen,
+  ttsEnabled,
 }: {
   message: MessageDTO;
   onMessageUpdate: (updated: MessageDTO) => void;
   onLanguageChosen?: (code: string) => void;
+  ttsEnabled?: boolean;
 }) {
   return (
     <div className="min-w-0">
-      <StructuredAIResponse message={message} onMessageUpdate={onMessageUpdate} onLanguageChosen={onLanguageChosen} />
+      <StructuredAIResponse message={message} onMessageUpdate={onMessageUpdate} onLanguageChosen={onLanguageChosen} ttsEnabled={ttsEnabled} />
     </div>
   );
 }

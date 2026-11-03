@@ -1,3 +1,5 @@
+import type { SyncItemCategory } from "@/lib/integrations";
+
 /** An integration problem whose message is safe and useful to show the user. */
 export class IntegrationError extends Error {
   constructor(
@@ -7,6 +9,21 @@ export class IntegrationError extends Error {
   ) {
     super(message);
     this.name = "IntegrationError";
+  }
+}
+
+/** A page or file could not be loaded. Carries what went wrong for the sync's run details. */
+export class FetchError extends IntegrationError {
+  constructor(
+    message: string,
+    readonly category: SyncItemCategory,
+    /** Status of the HTTP response, when the server answered. */
+    readonly httpStatus?: number,
+    /** Original technical error (already free of secrets). */
+    readonly detail?: string,
+  ) {
+    super(message);
+    this.name = "FetchError";
   }
 }
 

@@ -1,57 +1,31 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { BookOpenText, Check, ChevronDown, Copy, RotateCcw, SearchX } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, ChevronDown, Copy, RotateCcw } from "lucide-react";
 import { buildSources } from "@/lib/ai-response";
+import { buildClinicalNote } from "@/lib/clinical-note";
 import { getLanguage } from "@/lib/languages";
 import { PROVIDER_LABELS, type MessageDTO } from "@/lib/types";
 import { api } from "@/lib/api";
-import { InlineText, Markdown } from "../Markdown";
+import { speechTextForAnswer } from "@/lib/speech-text";
+import { Markdown } from "../Markdown";
+import { TTSButton } from "../TTSButton";
+import { BlockHeading, CautionBox, ClinicalSummary, KeyPoints, NoSourceNotice, NotEstablished } from "./NoteBlocks";
+import { Spinner } from "../../ui";
 import { LanguageSelector } from "./LanguageSelector";
+import { clinicalNoteToText } from "./note-text";
 import { ResponseHeader } from "./ResponseHeader";
-import { ResponseSection } from "./ResponseSection";
-import { citationLabel, pageLabel, ResponseSources, shortCitationLabel } from "./ResponseSources";
-import { ResponseTabs, type ResponseTab } from "./ResponseTabs";
+import { noteTextRenderer, ResponseSection } from "./ResponseSection";
+import { pageLabel, ReferenceList } from "./ResponseSources";
 
-// ONE assistant message = ONE container: header (AI icon, title, language), topic tabs, overview,
-// numbered section cards with callouts, sources and retrieved passages, footer. The model only
-// supplied the text; document names, pages and excerpts come from the existing citations.
+// ONE assistant message = ONE compact clinical note: header (title, language), a short italic Clinical summary, Key
+// points, an always-visible Important / Caution box when the sources state one, the Reference (clickable sources) and a
+// "More details" control that holds everything else, including the retrieved passages. The model only supplied the
+// text; document names, pages and excerpts come from the existing citations. What goes where is decided by
+// lib/clinical-note.ts, which only arranges the answer and never rewrites or drops any of it.
 
 function time(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-/** Tab text when the model gave none (older answers): the section title's first words. */
-function fallbackTab(title: string): string {
-  const words = title.split(/\s+/);
-  const short = words.slice(0, 3).join(" ");
-  return short.length > 28 ? `${short.slice(0, 27)}…` : short;
-}
-
-/**
- * Scroll-spy for the tabs: the active section is the last one whose top has passed just below the
- * sticky tab bar (or the first one, before any has). Recomputed whenever a section moves across
- * the viewport, so no scroll listener is needed.
- */
-function useActiveSection(ids: string[], barId: string): [string | null, (id: string) => void] {
-  const [active, setActive] = useState<string | null>(null);
-  const key = ids.join("|");
-
-  useEffect(() => {
-    const targets = key ? key.split("|") : [];
-    const elements = targets.map((id) => document.getElementById(id)).filter((el): el is HTMLElement => !!el);
-    if (elements.length < 2) return;
-    const update = () => {
-      const line = (document.getElementById(barId)?.getBoundingClientRect().bottom ?? 0) + 24;
-      const passed = elements.filter((el) => el.getBoundingClientRect().top <= line);
-      setActive((passed.at(-1) ?? elements[0]!).id);
-    };
-    const observer = new IntersectionObserver(update, { threshold: [0, 0.1, 0.25, 0.5, 0.75, 1] });
-    elements.forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
-  }, [key, barId]);
-
-  return [active, setActive];
 }
 
 /**
@@ -62,16 +36,20 @@ export function StructuredAIResponse({
   message,
   onMessageUpdate,
   onLanguageChosen,
+  ttsEnabled = false,
 }: {
   message: MessageDTO;
   /** Receives the updated message (same id) after a language change. */
   onMessageUpdate: (updated: MessageDTO) => void;
   /** Remembers the last chosen language as the default for new answers. */
   onLanguageChosen?: (code: string) => void;
+  /** Show "Listen" (speech is generated only when clicked). */
+  ttsEnabled?: boolean;
 }) {
-  const [showPassages, setShowPassages] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
   const [highlighted, setHighlighted] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  /** The language being prepared (null = none). The answer shown stays as it is until that one is ready. */
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<{ language: string; text: string } | null>(null);
 
@@ -80,45 +58,64 @@ export function StructuredAIResponse({
   const sources = response ? response.sources : buildSources(citations);
   const language = getLanguage(message.language);
   const ui = language.ui;
+  const italic = language.italic;
   const base = `resp-${message.id}`;
   const notFound = response ? !response.found : message.noContext;
+  const note = useMemo(() => (response ? buildClinicalNote(response) : null), [response]);
 
-  // Tabs come from this answer's own sections (plus its overview), in the answer's language.
-  const tabs: ResponseTab[] = useMemo(() => {
-    if (!response || notFound) return [];
-    const list: ResponseTab[] = response.summary ? [{ target: `${base}-overview`, label: ui.overview }] : [];
-    response.sections.forEach((s, i) => list.push({ target: `${base}-s${i}`, label: s.tab || fallbackTab(s.title) }));
-    return list;
-  }, [response, notFound, base, ui.overview]);
-  const [activeTab, setActiveTab] = useActiveSection(tabs.map((t) => t.target), `${base}-tabs`);
-
-  function goTo(target: string) {
-    setActiveTab(target);
-    document.getElementById(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
+  // Opening a source (a reference chip or an inline marker) opens "More details" at that passage.
   function cite(n: number) {
-    setShowPassages(true);
+    setShowDetails(true);
     setHighlighted(n);
     requestAnimationFrame(() => document.getElementById(`src-${message.id}-${n}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
   }
 
+  // Another language can be chosen while one is still being prepared. Every choice gets a number; only the newest may
+  // change what is shown, and the older request is abandoned (the server stops translating it).
+  const choice = useRef(0);
+  const pending = useRef<AbortController | null>(null);
+  const pendingLanguage = useRef<string | null>(null); // the language being prepared, so repeated clicks on it don't start it over
+  useEffect(
+    () => () => {
+      choice.current++;
+      pending.current?.abort(); // leaving the page abandons the request
+    },
+    [],
+  );
+
   async function changeLanguage(code: string) {
-    setBusy(code);
+    if (code === pendingLanguage.current) return; // already on its way: clicking again must not send it twice or restart it
+    const mine = ++choice.current;
+    pending.current?.abort();
     setError(null);
+    if (code === message.language) {
+      pendingLanguage.current = null;
+      setBusy(null); // back to the language already shown: nothing to fetch, and an older choice no longer applies
+      return;
+    }
+    const controller = new AbortController();
+    pending.current = controller;
+    pendingLanguage.current = code;
+    setBusy(code);
     try {
-      onMessageUpdate(await api.setMessageLanguage(message.id, code));
+      const updated = await api.setMessageLanguage(message.id, code, controller.signal);
+      if (mine !== choice.current) return; // a newer choice was made while this one was working
+      onMessageUpdate(updated);
       onLanguageChosen?.(code);
     } catch (err) {
+      if (mine !== choice.current || controller.signal.aborted) return;
       setError({ language: code, text: (err as Error).message });
     } finally {
-      setBusy(null);
+      if (mine === choice.current) {
+        pendingLanguage.current = null;
+        setBusy(null);
+      }
     }
   }
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(message.content);
+      await navigator.clipboard.writeText(response && note ? clinicalNoteToText(response, note, sources, citations, ui) : message.content);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -126,143 +123,149 @@ export function StructuredAIResponse({
     }
   }
 
-  const inline = (text: string) => (
-    <InlineText
-      text={text}
-      maxCitation={citations.length}
-      onCite={cite}
-      titleFor={(n) => citationLabel(citations.find((c) => c.index === n))}
-      labelFor={(n) => shortCitationLabel(citations.find((c) => c.index === n))}
-      tone="dark"
-    />
-  );
+  const render = noteTextRenderer(citations, cite, italic);
+  const hasDetails = (note?.details.length ?? 0) > 0;
+  const hasPassages = citations.length > 0;
+  const detailsLabel = hasDetails ? ui.note.moreDetails : `${ui.note.sourcePassages} (${citations.length})`;
 
   return (
-    <article aria-label="AI response" aria-busy={!!busy} className="rounded-2xl border border-navy-700 bg-navy-950 px-4 text-slate-100 shadow-lg sm:px-6">
+    <article aria-label="AI response" aria-busy={!!busy} className="max-w-3xl rounded-xl border border-slate-200 bg-white text-slate-900 shadow-sm">
       <ResponseHeader
         title={response?.title}
         lang={language.htmlLang}
-        eyebrow={notFound ? "AI answer · not found" : "Knowledge Base answer"}
         actions={<LanguageSelector value={message.language} onChange={(code) => void changeLanguage(code)} busy={busy} />}
       />
       {busy && (
-        <p className="-mt-1 mb-2 text-xs text-orange-200" role="status">
-          Updating this answer to {getLanguage(busy).nativeName}…
-        </p>
+        <>
+          {/* Small, quiet progress: the answer below stays readable until the new language replaces it. */}
+          <div className="mx-4 mb-1.5 h-0.5 overflow-hidden rounded bg-slate-100 sm:mx-5" aria-hidden>
+            <div className="h-full w-1/3 rounded bg-brand-600 motion-safe:animate-[language-progress_1.1s_ease-in-out_infinite]" />
+          </div>
+          <p className="mb-2 flex items-center gap-1.5 px-4 text-xs text-slate-600 sm:px-5" role="status">
+            <Spinner className="h-3 w-3" /> Translating to {getLanguage(busy).nativeName}…
+          </p>
+        </>
       )}
 
-      <ResponseTabs id={`${base}-tabs`} tabs={tabs} active={activeTab} onSelect={goTo} />
-
-      {/* Content, in the response language (fixed labels follow it too) */}
-      <div lang={language.htmlLang} className={`space-y-3 pt-3 pb-4 transition-opacity duration-200 ${busy ? "opacity-50" : ""}`}>
-        {response ? (
+      {/* Content, in the response language (fixed labels follow it too). It fades in when a new language replaces the old one. */}
+      <div
+        key={message.language}
+        lang={language.htmlLang}
+        className={`space-y-3.5 px-4 pb-3 transition-opacity duration-200 motion-safe:animate-[fade-in_250ms_ease-out] sm:px-5 ${busy ? "opacity-70" : ""}`}
+      >
+        {notFound ? (
+          <NotEstablished ui={ui} text={response ? response.summary : message.content} italic={italic} render={render} />
+        ) : note ? (
           <>
-            {response.summary &&
-              (notFound ? (
-                <div className="flex items-start gap-2.5 rounded-xl border border-navy-700 bg-navy-900 px-4 py-3">
-                  <SearchX className="mt-0.5 h-4.5 w-4.5 shrink-0 text-slate-400" aria-hidden />
-                  <p className="text-[15px] leading-relaxed text-slate-200">{inline(response.summary)}</p>
-                </div>
-              ) : (
-                <section id={`${base}-overview`} aria-label={ui.overview} className="scroll-mt-16 rounded-2xl border border-navy-700 border-l-4 border-l-orange-400 bg-navy-900 px-4 py-3 sm:px-5">
-                  <p className="mb-1 text-[11px] font-bold tracking-[0.12em] text-orange-300 uppercase">{ui.overview}</p>
-                  <p className="text-[15px] leading-relaxed text-slate-100">{inline(response.summary)}</p>
-                </section>
-              ))}
-            {response.sections.map((section, i) => (
-              <ResponseSection key={i} id={`${base}-s${i}`} section={section} number={i + 1} citations={citations} ui={ui} onCite={cite} />
-            ))}
+            {note.summary && <ClinicalSummary id={`${base}-summary`} label={ui.note.clinicalSummary} text={note.summary} italic={italic} render={render} />}
+            <KeyPoints id={`${base}-points`} note={note} label={ui.note.keyPoints} italic={italic} render={render} />
+            <CautionBox id={`${base}-caution`} cautions={note.cautions} ui={ui} render={render} />
           </>
         ) : (
-          // Plain-text answers (older messages or unstructured output) in the same container.
-          <div className={`rounded-xl border border-navy-700 bg-navy-900 px-4 py-3 text-slate-200 [&_code]:bg-navy-700 [&_strong]:text-orange-200 ${notFound ? "text-slate-300" : ""}`}>
+          // Plain-text answers (older messages or unstructured output) in the same card.
+          <div className="text-slate-800">
             <Markdown text={message.content} maxCitation={citations.length} onCite={cite} />
           </div>
         )}
 
         {/* Language change failed: shown here, the current answer stays */}
         {error && (
-          <div role="alert" className="flex flex-wrap items-center gap-2 rounded-xl border border-red-500/40 bg-red-600/10 px-4 py-2.5 text-sm text-red-100">
+          <div role="alert" className="flex flex-wrap items-center gap-2 rounded-lg border border-red-300 bg-red-50 px-3.5 py-2.5 text-sm text-red-950">
             <span className="min-w-0 flex-1">
               Unable to generate the {getLanguage(error.language).label} response. {error.text}
             </span>
             <button
               type="button"
               onClick={() => void changeLanguage(error.language)}
-              className="inline-flex items-center gap-1 rounded-full bg-orange-500 px-3 py-1 text-xs font-semibold text-navy-950 hover:bg-orange-400"
+              className="inline-flex items-center gap-1 rounded-full bg-slate-800 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
             >
               <RotateCcw className="h-3.5 w-3.5" /> Try again
             </button>
           </div>
         )}
-      </div>
 
-      {/* Sources, inside the same response */}
-      {(sources.length > 0 || citations.length > 0) && (
-        <div className="border-t border-navy-700 py-4">
-          {sources.length > 0 && (
-            <>
-              <h4 className="mb-2.5 flex items-center gap-1.5 text-[11px] font-bold tracking-[0.12em] text-slate-400 uppercase">
-                <BookOpenText className="h-3.5 w-3.5" aria-hidden /> {ui.sources}
-              </h4>
-              <ResponseSources sources={sources} citations={citations} onCite={cite} />
-            </>
-          )}
-          {citations.length > 0 && (
-            <div className="mt-3">
-              <button
-                type="button"
-                onClick={() => setShowPassages((s) => !s)}
-                aria-expanded={showPassages}
-                className="flex items-center gap-1 text-xs font-medium text-sky-300 hover:underline"
-              >
-                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showPassages ? "rotate-180" : ""}`} />
-                {showPassages ? "Hide retrieved passages" : `Show all retrieved passages (${citations.length})`}
-              </button>
-              {showPassages && (
-                <ul className="mt-2 space-y-2">
-                  {citations.map((c) => (
-                    <li
-                      key={c.index}
-                      id={`src-${message.id}-${c.index}`}
-                      className={`rounded-lg border p-2.5 text-xs transition-colors ${
-                        highlighted === c.index ? "border-orange-400/60 bg-orange-400/10" : "border-navy-700 bg-navy-900"
-                      } ${c.cited ? "" : "opacity-70"}`}
-                    >
-                      <div className="mb-1 flex items-center gap-2">
-                        <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded bg-sky-500/80 px-1 text-[11px] font-semibold text-white">
-                          {c.index}
-                        </span>
-                        <span className="truncate font-medium text-slate-100">{c.filename}</span>
-                        {pageLabel(c.pageStart, c.pageEnd) && <span className="shrink-0 text-slate-400">{pageLabel(c.pageStart, c.pageEnd)}</span>}
-                        {c.source === "attachment" && (
-                          <span className="shrink-0 rounded bg-violet-400/20 px-1 py-px text-[10px] font-medium text-violet-200">Attachment</span>
-                        )}
-                        <span className="ml-auto shrink-0 text-slate-500" title={c.score === null ? undefined : "Similarity score"}>
-                          {c.cited ? "cited" : ""}
-                          {c.cited && c.score !== null ? " · " : ""}
-                          {c.score !== null && c.score.toFixed(2)}
-                        </span>
-                      </div>
-                      <p className="leading-relaxed text-slate-300">{c.excerpt}</p>
-                    </li>
-                  ))}
-                </ul>
+        {/* Reference: always visible, so the evidence is one click away. An answer with no source says so. */}
+        {sources.length > 0 ? (
+          <section aria-labelledby={`${base}-reference`}>
+            <BlockHeading id={`${base}-reference`}>{ui.note.reference}</BlockHeading>
+            <ReferenceList sources={sources} citations={citations} onCite={cite} />
+          </section>
+        ) : (
+          !notFound && <NoSourceNotice ui={ui} />
+        )}
+
+        {(hasDetails || hasPassages) && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowDetails((s) => !s)}
+              aria-expanded={showDetails}
+              aria-controls={`${base}-details`}
+              className="-ml-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-brand-700 hover:bg-brand-50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-600"
+            >
+              <ChevronDown className={`h-4 w-4 transition-transform ${showDetails ? "rotate-180" : ""}`} aria-hidden />
+              {showDetails ? ui.note.hideDetails : detailsLabel}
+            </button>
+            <div id={`${base}-details`} hidden={!showDetails} className="mt-2 space-y-4 border-t border-slate-200 pt-3">
+              {note?.details.map((section, i) => (
+                <ResponseSection key={i} id={`${base}-d${i}`} section={section} citations={citations} ui={ui} italic={italic} onCite={cite} />
+              ))}
+              {hasPassages && (
+                <section aria-labelledby={`${base}-passages`}>
+                  <BlockHeading id={`${base}-passages`}>
+                    {ui.note.sourcePassages} ({citations.length})
+                  </BlockHeading>
+                  <ul className="space-y-2">
+                    {citations.map((c) => (
+                      <li
+                        key={c.index}
+                        id={`src-${message.id}-${c.index}`}
+                        className={`rounded-lg border p-2.5 text-[13px] transition-colors ${highlighted === c.index ? "border-brand-600 bg-brand-50" : "border-slate-200 bg-slate-50"} ${
+                          c.cited ? "" : "opacity-80"
+                        }`}
+                      >
+                        <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded bg-slate-700 px-1 text-[11px] font-semibold text-white">{c.index}</span>
+                          <span className="min-w-0 truncate font-medium text-slate-900">{c.filename}</span>
+                          {pageLabel(c.pageStart, c.pageEnd) && <span className="shrink-0 text-slate-600">{pageLabel(c.pageStart, c.pageEnd)}</span>}
+                          {c.source === "attachment" && <span className="shrink-0 rounded bg-violet-100 px-1 py-px text-[11px] font-medium text-violet-900">Attachment</span>}
+                          <span className="ml-auto shrink-0 text-slate-600" title={c.score === null ? undefined : "Similarity score"}>
+                            {c.cited ? "cited" : ""}
+                            {c.cited && c.score !== null ? " · " : ""}
+                            {c.score !== null && c.score.toFixed(2)}
+                          </span>
+                        </div>
+                        <p className="leading-relaxed text-slate-700">{c.excerpt}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
               )}
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
-      {/* Footer */}
-      <footer className="-mx-4 flex items-center gap-1 rounded-b-2xl border-t border-navy-700 bg-navy-900/60 px-3 py-1.5 text-slate-500 sm:-mx-6">
-        <button type="button" onClick={() => void copy()} className="rounded-md p-1.5 hover:bg-navy-700 hover:text-slate-200" aria-label="Copy answer">
-          {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-        </button>
-        <span className="truncate text-[11px]">
-          {message.provider ? `${PROVIDER_LABELS[message.provider]} · ${message.model} · ` : ""}
-          {time(message.createdAt)}
-        </span>
+      {/* Footer: actions and provenance, then the one-line reminder */}
+      <footer className="rounded-b-xl border-t border-slate-100 bg-slate-50/70 px-3 py-2 text-slate-600 sm:px-4">
+        <div className="flex items-center gap-1">
+          {ttsEnabled && !busy && <TTSButton messageId={message.id} text={speechTextForAnswer(response, message.content)} language={message.language} />}
+          <button
+            type="button"
+            onClick={() => void copy()}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium hover:bg-slate-200 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-brand-600"
+            aria-label="Copy answer"
+          >
+            {copied ? <Check className="h-3.5 w-3.5 text-emerald-700" /> : <Copy className="h-3.5 w-3.5" />} {copied ? "Copied" : "Copy"}
+          </button>
+          <span className="ml-auto truncate pl-2 text-[11px]">
+            {message.provider ? `${PROVIDER_LABELS[message.provider]} · ${message.model} · ` : ""}
+            {time(message.createdAt)}
+          </span>
+        </div>
+        <p lang={language.htmlLang} className="mt-1 text-[11px] leading-snug">
+          {ui.note.disclaimer}
+        </p>
       </footer>
     </article>
   );

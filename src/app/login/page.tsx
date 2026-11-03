@@ -18,6 +18,8 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   if (await currentSession()) redirect(target); // already signed in
 
   const { DEMO_SHOW_CREDENTIALS, DEMO_USER_EMAIL, DEMO_USER_PASSWORD } = getConfig();
+  // The demo panel exists only when a demo account is deliberately set up (it has no built-in password) AND shown.
+  const showDemo = DEMO_SHOW_CREDENTIALS && !!DEMO_USER_PASSWORD;
 
   return (
     <div className="flex min-h-dvh flex-col bg-[radial-gradient(ellipse_at_top,rgba(20,163,139,0.12),transparent_55%),linear-gradient(to_bottom,#f8fafc,#eef2f7)]">
@@ -35,10 +37,13 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-900/5 sm:p-8">
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">Welcome back</h1>
             <p className="mt-1 text-sm text-slate-500">Sign in to your {BRAND.category}</p>
-            <LoginForm redirect={target} emailPlaceholder={DEMO_SHOW_CREDENTIALS ? DEMO_USER_EMAIL : "you@company.com"} />
+            <LoginForm redirect={target} emailPlaceholder={showDemo ? DEMO_USER_EMAIL : "you@company.com"} />
+            <p className="mt-5 border-t border-slate-100 pt-4 text-center text-sm text-slate-500">
+              First time here? Sign in with the temporary password you were given. You will be asked to choose your own password before you continue.
+            </p>
           </div>
 
-          {DEMO_SHOW_CREDENTIALS && (
+          {showDemo && (
             // Rendered on the server; "Use Demo Account" posts a plain form, so the password is never in client JavaScript.
             <section aria-labelledby="demo-account" className="mt-4 rounded-2xl border border-teal-200 bg-teal-50/70 p-5">
               <h2 id="demo-account" className="flex items-center gap-2 text-sm font-semibold text-teal-900">

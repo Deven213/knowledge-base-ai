@@ -5,7 +5,7 @@ import { normalizeText } from "@/server/knowledge/extract/normalize";
 import { ingestDocument } from "@/server/knowledge/ingest";
 import { retrieveContext } from "@/server/knowledge/retrieve";
 import { SqliteVectorStore } from "@/server/knowledge/vector-store";
-import { FakeEmbedder, memoryDb } from "./helpers";
+import { FakeEmbedder, memoryDb, TEST_ORG } from "./helpers";
 
 const VOCAB = ["refund", "policy", "days", "shipping", "international", "warranty", "battery", "months"];
 
@@ -18,9 +18,9 @@ const DOC_TEXT = [
 function setup() {
   const db = memoryDb();
   const embedder = new FakeEmbedder(VOCAB);
-  const vectorStore = new SqliteVectorStore(db);
-  const deps = { db, embedder, vectorStore, chunkOptions: { chunkSize: 80, overlap: 0 } };
-  return { db, embedder, vectorStore, deps, docs: new DocumentRepository(db) };
+  const vectorStore = new SqliteVectorStore(db, TEST_ORG);
+  const deps = { db, embedder, vectorStore, documents: new DocumentRepository(db, TEST_ORG), chunkOptions: { chunkSize: 80, overlap: 0 } };
+  return { db, embedder, vectorStore, documents: new DocumentRepository(db, TEST_ORG), deps, docs: new DocumentRepository(db, TEST_ORG) };
 }
 
 describe("extraction", () => {

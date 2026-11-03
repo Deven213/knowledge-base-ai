@@ -60,19 +60,29 @@ export function dot(a: Float32Array, b: Float32Array): number {
 /**
  * Brute-force cosine search over SQLite BLOBs. Exact, simple, and fast enough
  * for tens of thousands of chunks, which is the scale of this MVP.
+ *
+ * A store belongs to ONE organization, fixed when it is created: it only writes chunks for that
+ * organization and only ever searches that organization’s chunks, so one customer’s question can never
+ * retrieve another customer’s text, whatever document IDs it supplies. (A store can’t be built without an org.)
  */
 export class SqliteVectorStore implements VectorStore {
-  constructor(private readonly db: Database.Database) {}
+  constructor(
+    private readonly db: Database.Database,
+    private readonly orgId: string,
+  ) {
+    if (!orgId) throw new Error("SqliteVectorStore needs an organization.");
+  }
 
   addChunks(documentId: string, embeddingModel: string, chunks: StoredChunkInput[]): void {
     const insert = this.db.prepare(
-      `INSERT INTO chunks (id, document_id, chunk_index, content, page_start, page_end, embedding, embedding_model)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO chunks (id, org_id, document_id, chunk_index, content, page_start, page_end, embedding, embedding_model)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.db.transaction(() => {
       for (const c of chunks) {
         insert.run(
           randomUUID(),
+          this.orgId,
           documentId,
           c.chunkIndex,
           c.content,
@@ -86,11 +96,11 @@ export class SqliteVectorStore implements VectorStore {
   }
 
   deleteChunks(documentId: string): void {
-    this.db.prepare(`DELETE FROM chunks WHERE document_id = ?`).run(documentId);
+    this.db.prepare(`DELETE FROM chunks WHERE document_id = ? AND org_id = ?`).run(documentId, this.orgId);
   }
 
   search(query: Float32Array, options: SearchOptions): SearchHit[] {
-    const params: unknown[] = [options.embeddingModel];
+    const params: unknown[] = [this.orgId, this.orgId, options.embeddingModel];
     let filter = "";
     if (options.documentIds && options.documentIds.length > 0) {
       filter = `AND c.document_id IN (${options.documentIds.map(() => "?").join(",")})`;
@@ -101,7 +111,7 @@ export class SqliteVectorStore implements VectorStore {
       .prepare(
         `SELECT c.id, c.document_id, c.chunk_index, c.content, c.page_start, c.page_end, c.embedding, d.filename
          FROM chunks c JOIN documents d ON d.id = c.document_id
-         WHERE d.status = 'ready' AND c.embedding_model = ? ${filter}`,
+         WHERE c.org_id = ? AND d.org_id = ? AND d.status = 'ready' AND c.embedding_model = ? ${filter}`,
       )
       .all(...params) as {
       id: string;

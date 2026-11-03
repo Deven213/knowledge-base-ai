@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { DocumentRepository } from "@/server/db/repositories";
 import { ingestDocument } from "@/server/knowledge/ingest";
 import { SqliteVectorStore, type SearchHit } from "@/server/knowledge/vector-store";
 import { ProviderConfigService } from "@/server/llm/resolve";
@@ -6,7 +7,7 @@ import type { LLMProvider, LLMRequest } from "@/server/llm/types";
 import { answerQuestion, AnswerInputError, NO_CONTEXT_ANSWER } from "@/server/rag/answer";
 import { buildCitations, extractCitedIndices } from "@/server/rag/citations";
 import { buildUserPrompt } from "@/server/rag/prompt";
-import { FakeEmbedder, memoryDb, promptText, testConfig } from "./helpers";
+import { FakeEmbedder, memoryDb, promptText, TEST_ORG, testConfig } from "./helpers";
 
 const hit = (over: Partial<SearchHit>): SearchHit => ({
   chunkId: "c",
@@ -90,9 +91,9 @@ describe("answerQuestion", () => {
   async function setup() {
     const db = memoryDb();
     const embedder = new FakeEmbedder(["refund", "policy", "days", "warranty", "battery", "months"]);
-    const vectorStore = new SqliteVectorStore(db);
+    const vectorStore = new SqliteVectorStore(db, TEST_ORG);
     await ingestDocument(
-      { db, embedder, vectorStore, chunkOptions: { chunkSize: 32, overlap: 0 } },
+      { db, embedder, vectorStore, documents: new DocumentRepository(db, TEST_ORG), chunkOptions: { chunkSize: 32, overlap: 0 } },
       { filename: "policy.txt", buffer: Buffer.from("Refund policy: 30 days.\n\nBattery warranty: 12 months.") },
     );
     const providerConfig = new ProviderConfigService(db, testConfig({ ANTHROPIC_API_KEY: "sk-ant-test-key-12345", ANTHROPIC_MODEL: "configured-model" }));

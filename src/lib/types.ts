@@ -36,6 +36,15 @@ export interface DocumentDTO {
   createdAt: string;
 }
 
+/** Result of `DELETE /api/documents/failed`. */
+export interface ClearFailedDocumentsDTO {
+  /** How many failed documents were actually removed (0 when there was nothing to clear). */
+  deleted: number;
+  /** IDs of the removed documents, so the list can drop exactly those rows. */
+  deletedIds: string[];
+  message: string;
+}
+
 export type ValueSource = "ui" | "env" | "none";
 
 export interface ProviderStatusDTO {
@@ -146,4 +155,152 @@ export interface StatsDTO {
 
 export interface ApiErrorDTO {
   error: string;
+}
+
+// ── Accounts, organizations and team ─────────────────────────────────────────
+
+export type OrgRole = "owner" | "admin" | "member" | "doctor" | "viewer";
+
+export interface OrganizationDTO {
+  id: string;
+  name: string;
+  slug: string;
+  role: OrgRole;
+}
+
+/** Who is signed in and where. The browser uses `permissions` only to hide controls; the server enforces every one. */
+export interface SessionDTO {
+  user: { id: string; email: string; displayName: string | null; isPlatformAdmin: boolean };
+  /** True while the account only has a temporary password: the only thing allowed is choosing a new one. */
+  passwordChangeRequired: boolean;
+  organization: OrganizationDTO;
+  organizations: OrganizationDTO[];
+  permissions: string[];
+}
+
+export interface MemberDTO {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  role: OrgRole;
+  status: "active" | "disabled";
+  joinedAt: string;
+}
+
+export interface InvitationDTO {
+  id: string;
+  email: string;
+  /** 'owner' only for a Customer Admin invitation issued by a platform administrator. */
+  role: OrgRole;
+  status: "pending" | "accepted" | "revoked" | "expired";
+  expiresAt: string;
+  createdAt: string;
+  invitedBy: string;
+}
+
+/** The link is shown once: only a hash of its token is stored. */
+export interface CreatedInvitationDTO {
+  invitation: InvitationDTO;
+  url: string;
+}
+
+// ── Super Admin (platform administrator) console ─────────────────────────────
+
+export type WorkspaceStatus = "active" | "suspended";
+
+/** Whether a workspace's Customer Admin has activated their account yet. */
+export type ActivationStatusDTO = "activated" | "pending" | "expired" | "none";
+
+/** A customer workspace as the Super Admin sees it: metadata and counts only, never documents or chats. */
+export interface PlatformOrganizationDTO {
+  id: string;
+  name: string;
+  slug: string;
+  /** The Super Admin's own label. Metadata only: never a way to sign in. */
+  reference: string | null;
+  status: WorkspaceStatus;
+  createdAt: string;
+  memberCount: number;
+  ownerCount: number;
+  pendingAdminInvites: number;
+  activation: { status: ActivationStatusDTO; /** The registered email (the login ID) while activation is waiting. */ loginId: string | null; expiresAt: string | null };
+  lastLoginAt: string | null;
+}
+
+export interface PlatformMemberDTO {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  role: OrgRole;
+  userStatus: "active" | "disabled";
+  lastLoginAt: string | null;
+  joinedAt: string;
+  isPlatformAdmin: boolean;
+  /** "temporary": a temporary password is outstanding; "expired": it ran out or was revoked; "set": they chose their own. */
+  credential: { status: "set" | "temporary" | "expired"; expiresAt: string | null };
+}
+
+/** How much a workspace holds, as counts only (never content). */
+export interface WorkspaceDataDTO {
+  documents: number;
+  conversations: number;
+  integrations: number;
+  consultations: number;
+}
+
+export interface PlatformOrganizationDetailDTO {
+  organization: PlatformOrganizationDTO;
+  members: PlatformMemberDTO[];
+  invitations: InvitationDTO[];
+  data: WorkspaceDataDTO;
+}
+
+/** What a customer deletion removed. */
+export interface DeletedCustomerDTO {
+  id: string;
+  name: string;
+  members: number;
+  accountsDeleted: number;
+  accountsKept: number;
+  data: WorkspaceDataDTO;
+  /** Stored consultation recordings removed from storage with the workspace, and any left for the worker's sweep. */
+  recordingsRemoved: number;
+  recordingsPending: number;
+}
+
+/**
+ * What the Super Admin passes on to a Customer Admin. The temporary password exists ONLY in the response that issues
+ * it: the server keeps just a hash, so it can never be shown again (issue a new one instead).
+ */
+export interface IssuedCredentialsDTO {
+  workspaceName: string;
+  /** The registered email address. */
+  loginId: string;
+  temporaryPassword: string;
+  /** After this the temporary password no longer works. */
+  expiresAt: string;
+  /** The normal product login page, to send along. */
+  loginUrl: string;
+}
+
+export interface CreatedCustomerDTO {
+  organization: PlatformOrganizationDTO;
+  workspaceName: string;
+  loginId: string;
+  loginUrl: string;
+  /** True when this request repeated one that had already succeeded: nothing new was created and no password can be shown. */
+  alreadyCreated: boolean;
+  credentials: IssuedCredentialsDTO | null;
+}
+
+export interface AuditEntryDTO {
+  id: number;
+  at: string;
+  actorEmail: string | null;
+  action: string;
+  targetOrgId: string | null;
+  targetLabel: string | null;
+  outcome: "success" | "denied" | "failed";
+  ip: string | null;
+  details: Record<string, string | number | boolean | null>;
 }

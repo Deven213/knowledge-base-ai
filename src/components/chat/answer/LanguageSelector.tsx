@@ -6,7 +6,8 @@ import { Spinner } from "../../ui";
 
 /**
  * Per-response language switch: EN | हिन्दी | ગુજરાતી (radio group; arrow keys move between options).
- * Changing it updates THIS response in place; it never adds a message.
+ * Changing it updates THIS response in place; it never adds a message. It stays usable while a language is being prepared:
+ * the newest choice wins.
  */
 export function LanguageSelector({
   value,
@@ -34,7 +35,7 @@ export function LanguageSelector({
   }
 
   return (
-    <div role="radiogroup" aria-label="Response language" className="inline-flex shrink-0 rounded-full border border-navy-600 bg-navy-900 p-0.5">
+    <div role="radiogroup" aria-label="Response language" className="inline-flex shrink-0 rounded-full border border-slate-300 bg-slate-100 p-0.5">
       {LANGUAGES.map((l, i) => {
         const selected = l.code === value;
         const loading = busy === l.code;
@@ -47,14 +48,14 @@ export function LanguageSelector({
             type="button"
             role="radio"
             aria-checked={selected}
+            aria-busy={loading || undefined}
             aria-label={l.label}
             lang={l.htmlLang}
             tabIndex={selected ? 0 : -1}
-            disabled={!!busy}
             onKeyDown={(e) => onKeyDown(e, i)}
-            onClick={() => !selected && onChange(l.code)}
-            className={`inline-flex min-w-11 items-center justify-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-orange-400 disabled:cursor-wait ${
-              selected ? "bg-orange-500 text-navy-950" : "text-slate-300 hover:bg-navy-700 hover:text-white"
+            onClick={() => (!selected || busy) && onChange(l.code)} // while one is preparing, another choice (even the language shown) replaces it
+            className={`inline-flex min-w-11 items-center justify-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-brand-600 disabled:cursor-wait ${
+              selected ? "bg-brand-700 text-white" : "text-slate-700 hover:bg-slate-200 hover:text-slate-900"
             }`}
           >
             {loading && <Spinner className="h-3 w-3" />}

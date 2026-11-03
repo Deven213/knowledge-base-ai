@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { MoreVertical, X, type LucideIcon } from "lucide-react";
 import { BackButton } from "./BackButton";
 
@@ -103,19 +103,65 @@ export function EmptyState({ icon: Icon, title, children }: { icon: LucideIcon; 
   );
 }
 
+// While any dialog is open the page behind it must not scroll. Several can be open at once (a confirmation over another dialog), so the
+// lock is counted: the page is released only when the last one closes, and goes back exactly as it was.
+let pageScrollLocks = 0;
+let releasePageScroll: (() => void) | null = null;
+
+function lockPageScroll() {
+  if (pageScrollLocks++ > 0) return;
+  const html = document.documentElement;
+  const body = document.body;
+  const before = { overflow: html.style.overflow, paddingRight: body.style.paddingRight };
+  // Hiding the scrollbar widens the page; pad by the same amount so nothing behind the dialog shifts sideways.
+  const scrollbar = window.innerWidth - html.clientWidth;
+  html.style.overflow = "hidden";
+  if (scrollbar > 0) body.style.paddingRight = `${scrollbar}px`;
+  releasePageScroll = () => {
+    html.style.overflow = before.overflow;
+    body.style.paddingRight = before.paddingRight;
+  };
+}
+
+function unlockPageScroll() {
+  if (--pageScrollLocks > 0) return;
+  pageScrollLocks = 0;
+  releasePageScroll?.();
+  releasePageScroll = null;
+}
+
+/** The dialogs currently open, oldest first: only the newest one pulls keyboard focus back, so two open at once do not fight over it. */
+const openDialogs: symbol[] = [];
+
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * A dialog that always fits the screen. It is never taller than the visible area (see .modal-panel): the header and the action
+ * buttons stay in view and the content between them scrolls by itself, so nothing is ever cut off or out of reach, on a small laptop,
+ * a phone held either way, or a browser zoomed in. Short dialogs look exactly as before.
+ *
+ * Also: the page behind does not scroll; keyboard focus moves into the dialog, stays there while it is open and returns to what had it
+ * when it closes; and the dialog is named by its visible title for screen readers.
+ */
 export function Modal({
   open,
   title,
   onClose,
   children,
   footer,
+  size = "default",
 }: {
   open: boolean;
   title: string;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  /** "wide" (560px) is for dialogs with a lot to read; the default is 512px. Both shrink to fit a phone. */
+  size?: "default" | "wide";
 }) {
+  const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -123,24 +169,76 @@ export function Modal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!open) return;
+    lockPageScroll();
+    return unlockPageScroll;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const me = Symbol("dialog");
+    openDialogs.push(me);
+    const panel = panelRef.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // Start inside the dialog, unless a control in it already asked for focus (autoFocus).
+    if (panel && !panel.contains(document.activeElement)) panel.focus({ preventScroll: true });
+    // Tabbing, a click or a screen reader can still move focus out to the page behind: bring it back.
+    const pullBack = (e: FocusEvent) => {
+      if (openDialogs.at(-1) !== me || !panel || panel.contains(e.target as Node)) return;
+      (panel.querySelector<HTMLElement>(FOCUSABLE) ?? panel).focus({ preventScroll: true });
+    };
+    document.addEventListener("focusin", pullBack);
+    return () => {
+      document.removeEventListener("focusin", pullBack);
+      openDialogs.splice(openDialogs.indexOf(me), 1);
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, [open]);
+
   if (!open) return null;
+
+  /** Tab at the last control goes to the first, and Shift+Tab at the first goes to the last, so focus cycles inside the dialog. */
+  function keepTabInside(e: ReactKeyboardEvent<HTMLDivElement>) {
+    const panel = panelRef.current;
+    if (e.key !== "Tab" || !panel) return;
+    const controls = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)];
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (!first || !last) {
+      e.preventDefault();
+      panel.focus();
+    } else if (e.shiftKey && (document.activeElement === first || document.activeElement === panel)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onMouseDown={onClose}>
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-label={title}
-        className="card w-full max-w-lg overflow-hidden shadow-xl"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className={`card modal-panel flex w-full flex-col overflow-hidden shadow-xl focus:outline-none ${size === "wide" ? "max-w-[560px]" : "max-w-lg"}`}
         onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={keepTabInside}
       >
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
-          <h2 className="text-lg font-semibold">{title}</h2>
-          <button type="button" onClick={onClose} className="btn btn-ghost p-1.5" aria-label="Close">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+          <h2 id={titleId} className="min-w-0 text-lg font-semibold">
+            {title}
+          </h2>
+          <button type="button" onClick={onClose} className="btn btn-ghost shrink-0 p-1.5" aria-label="Close">
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="px-5 py-4">{children}</div>
-        {footer && <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50 px-5 py-3">{footer}</div>}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">{children}</div>
+        {footer && <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-slate-100 bg-slate-50 px-5 py-3">{footer}</div>}
       </div>
     </div>
   );

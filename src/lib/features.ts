@@ -21,6 +21,7 @@ export const FEATURE_KEYS = [
   "feedback_report",
   "audit_logs",
   "system_monitoring",
+  "consultations",
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_KEYS)[number];
@@ -50,6 +51,7 @@ export const FEATURES: readonly FeatureDefinition[] = [
   { key: "dashboard", name: "Dashboard", description: "Overview of documents, chunks, conversations and questions.", category: "Core", dependsOn: null, defaultEnabled: true, roadmap: false },
   { key: "documents", name: "Documents", description: "Upload, list and delete Knowledge Base documents.", category: "Core", dependsOn: "knowledge_base", defaultEnabled: true, roadmap: false },
   { key: "knowledge_base", name: "Knowledge Base", description: "Indexed documents that chat searches (RAG) to answer with citations.", category: "Core", dependsOn: null, defaultEnabled: true, roadmap: false },
+  { key: "consultations", name: "Doctor Consultations", description: "Record a doctor-patient consultation, transcribe it and draft a clinical note for the doctor to review and approve.", category: "Core", dependsOn: null, defaultEnabled: false, roadmap: false },
   // AI
   { key: "ai_agents", name: "AI Agents", description: "Create and manage specialized AI agents.", category: "AI", dependsOn: "knowledge_base", defaultEnabled: false, roadmap: true },
   { key: "ai_model_settings", name: "AI Model Settings", description: "Choose the active AI provider and configure model IDs.", category: "AI", dependsOn: "chat", defaultEnabled: true, roadmap: false },

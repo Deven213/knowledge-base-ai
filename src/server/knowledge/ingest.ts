@@ -1,7 +1,9 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { DocumentRepository, type DocumentSource } from "../db/repositories";
+import type { SyncItemCategory, SyncItemStage } from "@/lib/integrations";
+import type { DocumentRepository, DocumentSource } from "../db/repositories";
+import { safeErrorMessage } from "../security/redact";
 import { chunkPages, DEFAULT_CHUNK_OPTIONS, type Chunk, type ChunkOptions } from "./chunker";
 import type { Embedder } from "./embedder";
 import { ExtractionError, extractDocument, type ExtractedDocument } from "./extract";
@@ -10,7 +12,10 @@ import type { VectorStore } from "./vector-store";
 export interface IngestDeps {
   db: Database.Database;
   embedder: Embedder;
+  /** Scoped to one organization: chunks can only be written for (and searched within) that organization. */
   vectorStore: VectorStore;
+  /** Scoped to the same organization: a document can only be created, changed or found within it. */
+  documents: DocumentRepository;
   chunkOptions?: ChunkOptions;
 }
 
@@ -57,7 +62,7 @@ export async function ingestDocument(
   deps: IngestDeps,
   file: { filename: string; buffer: Buffer },
 ): Promise<IngestResult> {
-  const docs = new DocumentRepository(deps.db);
+  const docs = deps.documents;
   const documentId = randomUUID();
   docs.create({
     id: documentId,
@@ -96,6 +101,11 @@ export interface UpsertResult {
   outcome: "added" | "updated" | "skipped" | "failed";
   documentId: string | null;
   message: string | null;
+  /** Why it was skipped or failed, and at which stage (reading the text vs chunking/embedding/storing). */
+  category?: SyncItemCategory;
+  stage?: SyncItemStage;
+  /** Original technical error of an unexpected failure, with secrets removed. */
+  detail?: string;
 }
 
 export const contentHash = (buffer: Buffer) => createHash("sha256").update(buffer).digest("hex");
@@ -108,22 +118,30 @@ export const contentHash = (buffer: Buffer) => createHash("sha256").update(buffe
  * - If a new version can't be processed, the existing version is kept.
  */
 export async function upsertSourceDocument(deps: IngestDeps, file: SourceFile): Promise<UpsertResult> {
-  const docs = new DocumentRepository(deps.db);
+  const docs = deps.documents;
   const hash = contentHash(file.buffer);
   const existing = docs.findBySource(file.source.type, file.source.externalId);
 
   if (existing && existing.content_hash === hash && existing.status === "ready" && existing.embedding_models === deps.embedder.modelId) {
     docs.updateSourceMetadata(existing.id, file.displayName, file.source);
-    return { outcome: "skipped", documentId: existing.id, message: "Unchanged" };
+    return { outcome: "skipped", documentId: existing.id, message: "Unchanged", category: "unchanged" };
   }
 
   let processed: Processed;
   try {
     processed = await processFile(deps, file.filename, file.buffer);
   } catch (err) {
-    const message = err instanceof ExtractionError ? err.message : "Processing failed due to an internal error.";
-    if (!(err instanceof ExtractionError)) console.error("[ingest] unexpected failure", err);
-    return { outcome: "failed", documentId: existing?.id ?? null, message: existing ? `${message} The previous version was kept.` : message };
+    const extraction = err instanceof ExtractionError;
+    const message = extraction ? err.message : "Processing failed due to an internal error.";
+    if (!extraction) console.error("[ingest] unexpected failure", err instanceof Error ? `${err.name}: ${safeErrorMessage(err)}` : err);
+    return {
+      outcome: "failed",
+      documentId: existing?.id ?? null,
+      message: existing ? `${message} The previous version was kept.` : message,
+      category: extraction ? "extraction" : "ingestion",
+      stage: extraction ? "extract" : "index",
+      detail: extraction ? undefined : safeErrorMessage(err),
+    };
   }
 
   const meta = {

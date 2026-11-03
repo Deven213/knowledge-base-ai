@@ -24,7 +24,8 @@ export function LoginForm({ redirect, emailPlaceholder }: { redirect: string; em
       });
       const body = (await res.json().catch(() => ({}))) as { redirect?: string; error?: string };
       if (!res.ok) {
-        setError(res.status === 401 || res.status === 429 ? (body.error ?? "Invalid email or password.") : "Sign-in is unavailable right now. Please try again.");
+        // 401 wrong details, 403 the workspace is suspended, 429 too many attempts: the server's message is safe to show for these.
+        setError([401, 403, 429].includes(res.status) ? (body.error ?? "Invalid email or password.") : "Sign-in is unavailable right now. Please try again.");
         setPassword("");
         return;
       }

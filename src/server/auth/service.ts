@@ -1,64 +1,163 @@
 import "server-only";
 import type Database from "better-sqlite3";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { SESSION_COOKIE } from "@/lib/auth-routes";
 import { getConfig, type AppConfig } from "../config";
 import { getDb } from "../db/client";
+import type { Role } from "../db/constants";
+import { credentialStatus, IdentityRepository, type UserOrganization, type UserRow } from "./identity";
+import { burnPasswordCheck, DEFAULT_SCRYPT_PARAMS, PASSWORD_MAX_LENGTH, verifyPassword, type ScryptParams } from "./password";
 import { hashSessionToken, isWellFormedToken } from "./session-lookup";
 
-// Demo sign-in for this MVP: one account whose credentials come from the environment
-// (DEMO_USER_EMAIL / DEMO_USER_PASSWORD). Sessions are server-side rows; the browser only holds a
-// random token in an httpOnly cookie. Nothing about the session lives in localStorage or React state.
+// Accounts live in the users table; a sign-in creates a server-side session row bound to the user AND to
+// the organization they are working in. The browser only holds a random token in an httpOnly cookie
+// (nothing about the session lives in localStorage or React state), and the database stores only its hash.
 
 export interface Session {
+  userId: string;
   email: string;
+  displayName: string | null;
+  orgId: string;
+  role: Role;
+  isPlatformAdmin: boolean;
+  /** The account only has a temporary password: until it is replaced, nothing but the password change is allowed. */
+  mustChangePassword: boolean;
   expiresAt: string;
 }
 
-const digest = (value: string) => createHash("sha256").update(value).digest();
-/** Constant-time comparison (both sides hashed to the same length first). */
-const same = (a: string, b: string) => timingSafeEqual(digest(a), digest(b));
+const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
 
 export class AuthService {
+  readonly identity: IdentityRepository;
+
   constructor(
     private readonly db: Database.Database,
-    private readonly config: Pick<AppConfig, "DEMO_USER_EMAIL" | "DEMO_USER_PASSWORD" | "AUTH_SESSION_HOURS">,
-  ) {}
-
-  /** Checks email AND password together, always both, so the result reveals nothing about which was wrong. */
-  verifyCredentials(email: unknown, password: unknown): string | null {
-    if (typeof email !== "string" || typeof password !== "string") return null;
-    const normalized = email.trim().toLowerCase();
-    const emailOk = same(normalized, this.config.DEMO_USER_EMAIL);
-    const passwordOk = same(password, this.config.DEMO_USER_PASSWORD);
-    return emailOk && passwordOk ? this.config.DEMO_USER_EMAIL : null;
+    private readonly config: Pick<AppConfig, "AUTH_SESSION_HOURS" | "DEMO_USER_EMAIL" | "DEMO_USER_PASSWORD">,
+    private readonly passwordParams: ScryptParams = DEFAULT_SCRYPT_PARAMS,
+  ) {
+    this.identity = new IdentityRepository(db);
   }
 
-  get demoEmail(): string {
-    return this.config.DEMO_USER_EMAIL;
+  /**
+   * Checks an email and password. Always does the same amount of work (a real or a throwaway hash), and
+   * returns null for every failure, so the result reveals neither which emails exist nor which part was wrong.
+   */
+  async authenticate(email: unknown, password: unknown): Promise<UserRow | null> {
+    if (typeof email !== "string" || typeof password !== "string" || password.length > PASSWORD_MAX_LENGTH) {
+      return burnPasswordCheck(typeof password === "string" ? password.slice(0, PASSWORD_MAX_LENGTH) : "", this.passwordParams);
+    }
+    const user = this.identity.findUserByEmail(email);
+    if (!user) return burnPasswordCheck(password, this.passwordParams);
+    const matches = await verifyPassword(password, user.password_hash);
+    if (!matches || user.status !== "active") return null;
+    return user;
   }
 
-  createSession(email: string): { token: string; expiresAt: Date } {
+  /**
+   * True for an account whose temporary password has run out (or was revoked). Only meaningful AFTER the password was
+   * verified: telling someone who typed the right temporary password that it expired reveals nothing to anyone else.
+   */
+  temporaryPasswordExpired(user: UserRow): boolean {
+    return credentialStatus(user) === "expired";
+  }
+
+  /** The workspace a user lands in after signing in: the first one they joined that isn't suspended. */
+  defaultOrganization(userId: string): UserOrganization | undefined {
+    return this.identity.activeOrganizationsOf(userId)[0];
+  }
+
+  /** True when the person belongs to workspaces but every one of them is suspended (so sign-in can say why). */
+  onlySuspendedWorkspaces(userId: string): boolean {
+    const all = this.identity.organizationsOf(userId);
+    return all.length > 0 && all.every((o) => o.status === "suspended");
+  }
+
+  /** True when the person belongs to no workspace at all (so sign-in can say why, once the password was right). */
+  belongsToNoWorkspace(userId: string): boolean {
+    return this.identity.organizationsOf(userId).length === 0;
+  }
+
+  /** The public demo account exists only when its password is set in the environment. */
+  get demoEnabled(): boolean {
+    return !!this.config.DEMO_USER_PASSWORD;
+  }
+
+  demoUser(): UserRow | undefined {
+    return this.demoEnabled ? this.identity.findUserByEmail(this.config.DEMO_USER_EMAIL) : undefined;
+  }
+
+  /** Starts a session for a user inside an organization they belong to (and that isn't suspended). */
+  createSession(userId: string, orgId: string): { token: string; expiresAt: Date } {
+    const user = this.identity.findUserById(userId);
+    if (
+      !user ||
+      user.status !== "active" ||
+      credentialStatus(user) === "expired" ||
+      !this.identity.getMembership(orgId, userId) ||
+      this.identity.getOrganization(orgId)?.status !== "active"
+    ) {
+      throw new Error("Cannot start a session: not an active member of an active organization.");
+    }
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + this.config.AUTH_SESSION_HOURS * 3600_000);
-    this.db.prepare(`DELETE FROM auth_sessions WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')`).run();
-    this.db.prepare(`INSERT INTO auth_sessions (token_hash, email, expires_at) VALUES (?, ?, ?)`).run(hashSessionToken(token), email, expiresAt.toISOString());
+    this.db.prepare(`DELETE FROM auth_sessions WHERE expires_at <= ${NOW}`).run();
+    this.db
+      .prepare(`INSERT INTO auth_sessions (token_hash, email, user_id, org_id, expires_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(hashSessionToken(token), user.email, userId, orgId, expiresAt.toISOString());
     return { token, expiresAt };
   }
 
+  /**
+   * The session behind a token, or null. Everything is re-read from the database on every call, so a
+   * disabled account, a removed membership, a suspended workspace, or a temporary password that has expired or been
+   * revoked stops working immediately.
+   */
   getSession(token: string | null | undefined): Session | null {
     if (!isWellFormedToken(token)) return null;
     const row = this.db
-      .prepare(`SELECT email, expires_at FROM auth_sessions WHERE token_hash = ? AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')`)
-      .get(hashSessionToken(token)) as { email: string; expires_at: string } | undefined;
-    return row ? { email: row.email, expiresAt: row.expires_at } : null;
+      .prepare(
+        `SELECT s.user_id, s.org_id, s.expires_at, u.email, u.display_name, u.is_platform_admin, u.must_change_password, m.role
+         FROM auth_sessions s
+         JOIN users u ON u.id = s.user_id AND u.status = 'active'
+              AND NOT (u.must_change_password = 1 AND (u.temp_password_expires_at IS NULL OR u.temp_password_expires_at <= ${NOW}))
+         JOIN organizations o ON o.id = s.org_id AND o.status = 'active'
+         JOIN memberships m ON m.user_id = s.user_id AND m.org_id = s.org_id
+         WHERE s.token_hash = ? AND s.expires_at > ${NOW}`,
+      )
+      .get(hashSessionToken(token)) as
+      | { user_id: string; org_id: string; expires_at: string; email: string; display_name: string | null; is_platform_admin: number; must_change_password: number; role: Role }
+      | undefined;
+    if (!row) return null;
+    return {
+      userId: row.user_id,
+      email: row.email,
+      displayName: row.display_name,
+      orgId: row.org_id,
+      role: row.role,
+      isPlatformAdmin: row.is_platform_admin === 1,
+      mustChangePassword: row.must_change_password === 1,
+      expiresAt: row.expires_at,
+    };
+  }
+
+  /** Moves a session to another organization the user belongs to. */
+  switchOrganization(token: string | null | undefined, orgId: string): boolean {
+    const session = this.getSession(token);
+    if (!session || !isWellFormedToken(token) || !this.identity.getMembership(orgId, session.userId)) return false;
+    if (this.identity.getOrganization(orgId)?.status !== "active") return false;
+    this.db.prepare(`UPDATE auth_sessions SET org_id = ? WHERE token_hash = ?`).run(orgId, hashSessionToken(token));
+    return true;
   }
 
   /** Ends a session everywhere: the row is deleted, so the cookie token stops working at once. */
   deleteSession(token: string | null | undefined): void {
     if (isWellFormedToken(token)) this.db.prepare(`DELETE FROM auth_sessions WHERE token_hash = ?`).run(hashSessionToken(token));
+  }
+
+  deleteSessionsOfUser(userId: string): void {
+    this.db.prepare(`DELETE FROM auth_sessions WHERE user_id = ?`).run(userId);
   }
 }
 
@@ -78,7 +177,18 @@ export function sessionCookie(token: string, expiresAt: Date) {
   };
 }
 
-/** The signed-in session for this request, or null. */
+/** The session token in a request's Cookie header, if any. */
+export function sessionTokenFromRequest(request: Request): string | null {
+  const raw = request.headers.get("cookie")?.split(/;\s*/).find((c) => c.startsWith(`${SESSION_COOKIE}=`))?.slice(SESSION_COOKIE.length + 1);
+  if (!raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** The signed-in session for this page request (server components), or null. */
 export async function currentSession(): Promise<Session | null> {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   return getAuth().getSession(token);
@@ -86,37 +196,18 @@ export async function currentSession(): Promise<Session | null> {
 
 /**
  * Server-side guard for product layouts (the proxy already redirects with ?redirect=…; this is the
- * authoritative check next to the data).
+ * authoritative check next to the data). Someone who still has a temporary password is sent to choose a new one:
+ * they can't reach any product page until they have.
  */
 export async function requireSession(): Promise<Session> {
-  const session = await currentSession();
-  if (!session) redirect("/login");
+  const session = await requireSessionAllowingPasswordChange();
+  if (session.mustChangePassword) redirect("/change-password");
   return session;
 }
 
-// Slows down password guessing: at most 10 failed sign-ins per client per 15 minutes (in memory;
-// fine for this single-server demo).
-const failures = new Map<string, { count: number; resetAt: number }>();
-const WINDOW_MS = 15 * 60_000;
-const MAX_FAILURES = 10;
-
-export function tooManyFailures(client: string): boolean {
-  const entry = failures.get(client);
-  if (!entry || entry.resetAt < Date.now()) return false;
-  return entry.count >= MAX_FAILURES;
-}
-
-export function recordFailure(client: string): void {
-  const now = Date.now();
-  const entry = failures.get(client);
-  if (!entry || entry.resetAt < now) failures.set(client, { count: 1, resetAt: now + WINDOW_MS });
-  else entry.count += 1;
-}
-
-export function clearFailures(client: string): void {
-  failures.delete(client);
-}
-
-export function clientKey(request: Request): string {
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "local";
+/** Like requireSession, but also lets through a person who must still change a temporary password (the change-password page itself). */
+export async function requireSessionAllowingPasswordChange(): Promise<Session> {
+  const session = await currentSession();
+  if (!session) redirect("/login");
+  return session;
 }

@@ -2,7 +2,7 @@ import JSZip from "jszip";
 import { describe, expect, it, vi } from "vitest";
 import { checkAttachment } from "@/lib/attachments";
 import { IMAGE_UNSUPPORTED_MESSAGE, supportsImageInput } from "@/lib/capabilities";
-import { ConversationRepository } from "@/server/db/repositories";
+import { ConversationRepository, DocumentRepository } from "@/server/db/repositories";
 import { detectKind, extractDocument, sniffImage } from "@/server/knowledge/extract";
 import { ingestDocument } from "@/server/knowledge/ingest";
 import { SqliteVectorStore } from "@/server/knowledge/vector-store";
@@ -15,7 +15,7 @@ import type { ContentPart, LLMProvider, LLMRequest } from "@/server/llm/types";
 import { answerQuestion, AnswerInputError } from "@/server/rag/answer";
 import { AttachmentError, prepareAttachments, selectAttachmentSources } from "@/server/rag/attachments";
 import { askInConversation } from "@/server/rag/chat";
-import { FakeEmbedder, memoryDb, promptText, testConfig } from "./helpers";
+import { FakeEmbedder, memoryDb, promptText, TEST_ORG, testConfig, testUserId } from "./helpers";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -159,9 +159,9 @@ describe("selectAttachmentSources", () => {
 async function setup(model = "vision-model") {
   const db = memoryDb();
   const embedder = new FakeEmbedder(["refund", "policy", "days", "warranty", "battery", "months", "prescription"]);
-  const vectorStore = new SqliteVectorStore(db);
+  const vectorStore = new SqliteVectorStore(db, TEST_ORG);
   await ingestDocument(
-    { db, embedder, vectorStore, chunkOptions: { chunkSize: 32, overlap: 0 } },
+    { db, embedder, vectorStore, documents: new DocumentRepository(db, TEST_ORG), chunkOptions: { chunkSize: 32, overlap: 0 } },
     { filename: "policy.txt", buffer: Buffer.from("Refund policy: 30 days.\n\nBattery warranty: 12 months.") },
   );
   const providerConfig = new ProviderConfigService(
@@ -170,7 +170,7 @@ async function setup(model = "vision-model") {
   );
   const generate = vi.fn(async (_req: LLMRequest) => ({ text: "From the image and the policy [1]." }));
   const provider: LLMProvider = { id: "openai", generate };
-  const conversations = new ConversationRepository(db);
+  const conversations = new ConversationRepository(db, TEST_ORG, testUserId(db));
   const deps = { embedder, vectorStore, providerConfig, conversations, getProvider: () => provider, retrieval: { topK: 3, minScore: 0.2 } };
   return { db, deps, generate, conversations };
 }

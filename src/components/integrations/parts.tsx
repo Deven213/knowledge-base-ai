@@ -1,9 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronRight, Cloud, Folder, FolderOpen, Globe, HardDrive, Home, XCircle, type LucideIcon } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, Cloud, ExternalLink, Folder, FolderOpen, Globe, HardDrive, Home, XCircle, type LucideIcon } from "lucide-react";
 import { api } from "@/lib/api";
-import type { CloudFolderDTO, IntegrationDTO, IntegrationStatus, IntegrationType, SyncRunSummaryDTO } from "@/lib/integrations";
+import type {
+  CloudFolderDTO,
+  IntegrationDTO,
+  IntegrationStatus,
+  IntegrationType,
+  SyncItemCategory,
+  SyncItemStage,
+  SyncRunItemDTO,
+  SyncRunSummaryDTO,
+} from "@/lib/integrations";
 import { Badge, formatDate, Modal, Spinner } from "../ui";
 
 /** Icon, icon background (product colours) and item unit per integration. */
@@ -61,6 +70,95 @@ export function RunCounts({ run, unit = "files" }: { run: SyncRunSummaryDTO; uni
   );
 }
 
+const OUTCOME_TONE = { added: "green", updated: "blue", skipped: "slate", failed: "red" } as const;
+
+const STAGE_LABEL: Record<SyncItemStage, string> = {
+  fetch: "Loading page",
+  parse: "Reading page",
+  extract: "Reading file",
+  index: "Indexing",
+};
+
+const CATEGORY_LABEL: Record<SyncItemCategory, string> = {
+  http_error: "HTTP error",
+  network: "Network",
+  timeout: "Timeout",
+  redirect: "Redirect",
+  too_large: "Too large",
+  unsupported_content: "Unsupported content",
+  no_content: "No content",
+  unchanged: "Unchanged",
+  extraction: "Extraction",
+  ingestion: "Ingestion",
+  other: "Other",
+};
+
+/** One page or file of a sync run: its outcome, the reason, and (when recorded) where and why it ended that way. */
+export function RunItem({ item }: { item: SyncRunItemDTO }) {
+  const category = item.category && CATEGORY_LABEL[item.category];
+  const meta = [
+    item.stage && STAGE_LABEL[item.stage],
+    category !== item.message ? category : null, // "Unchanged" would otherwise appear twice
+    item.httpStatus ? `HTTP ${item.httpStatus}` : null,
+    item.at ? formatDateTime(item.at) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <li className="px-3 py-2 text-sm">
+      <div className="flex items-center gap-2">
+        <Badge tone={OUTCOME_TONE[item.outcome]}>{item.outcome}</Badge>
+        <span className="min-w-0 flex-1 truncate" title={item.name}>{item.name}</span>
+        {item.url && (
+          <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-slate-700" aria-label={`Open ${item.name}`}>
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        )}
+      </div>
+      {item.url && <p className="mt-0.5 truncate text-xs text-slate-400" title={item.url}>{item.url}</p>}
+      {item.message && <p className={`mt-0.5 text-xs ${item.outcome === "failed" ? "text-red-600" : "text-slate-500"}`}>{item.message}</p>}
+      {meta && <p className="mt-0.5 text-[11px] text-slate-400">{meta}</p>}
+      {item.detail && (
+        <details className="mt-1 text-xs text-slate-500">
+          <summary className="cursor-pointer select-none">Technical details</summary>
+          <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-slate-50 px-2 py-1.5 text-[11px] text-slate-600">{item.detail}</pre>
+        </details>
+      )}
+    </li>
+  );
+}
+
+/** The items of a run that failed, loaded from the run's details, so the reason is visible without opening the history. */
+function FailedItems({ run }: { run: SyncRunSummaryDTO }) {
+  const [items, setItems] = useState<SyncRunItemDTO[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .syncRunDetail(run.integrationId, run.id)
+      .then((detail) => !cancelled && setItems(detail.items.filter((i) => i.outcome === "failed")))
+      .catch((err: Error) => !cancelled && setError(err.message));
+    return () => {
+      cancelled = true;
+    };
+  }, [run.integrationId, run.id]);
+
+  if (error) return <p role="alert" className="mt-2 text-xs text-slate-500">Could not load the failed items: {error}</p>;
+  if (items === null) return <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-500" role="status"><Spinner className="h-3 w-3" /> Loading failed items…</p>;
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-3">
+      <p className="mb-1 text-xs font-medium text-slate-600">Failed items</p>
+      <ul aria-label="Failed items" className="max-h-60 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200 bg-white">
+        {items.map((item, idx) => (
+          <RunItem key={idx} item={item} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** The most recent run of one integration, with its counts. */
 export function LastSyncCard({ run, unit }: { run: SyncRunSummaryDTO | null; unit: string }) {
   return (
@@ -81,6 +179,7 @@ export function LastSyncCard({ run, unit }: { run: SyncRunSummaryDTO | null; uni
             </div>
           )}
           {run.errorMessage && <p className="mt-2 text-sm text-red-600">{run.errorMessage}</p>}
+          {run.status !== "running" && run.filesFailed > 0 && <FailedItems key={run.id} run={run} />}
         </>
       ) : (
         <p className="text-sm text-slate-500">No syncs yet. Click Sync Now to import content.</p>

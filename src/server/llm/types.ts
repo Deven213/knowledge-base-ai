@@ -23,6 +23,17 @@ export interface LLMRequest {
    * The response text is then that JSON. The caller still validates it (never trusted as-is).
    */
   responseFormat?: ResponseFormat;
+  /**
+   * "minimal" for a mechanical task that needs no reasoning (translating text that already exists): the provider should
+   * not spend time thinking where its API lets it choose. A hint only: adapters that can't honour it ignore it, and a
+   * model that refuses it is retried without it, so it can never make a request fail.
+   */
+  reasoning?: "minimal";
+  /**
+   * The request carries health information (a consultation transcript). If it fails, the provider's own message text, which can quote what was
+   * sent, is neither logged nor put in the error: only the kind of failure and its status are kept.
+   */
+  sensitive?: boolean;
 }
 
 export interface ResponseFormat {

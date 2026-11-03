@@ -4,6 +4,31 @@ import { PROVIDER_ENV_VARS, PROVIDER_LABELS, type ProviderId } from "@/lib/types
 import { redactSecrets } from "../security/redact";
 import { LLMError } from "./types";
 
+function humanDuration(seconds: number): string {
+  if (seconds >= 5400) return `${Math.round(seconds / 3600)} hours`;
+  if (seconds >= 90) return `${Math.round(seconds / 60)} minutes`;
+  return `${Math.max(1, Math.round(seconds))} seconds`;
+}
+
+/**
+ * Google's quota refusals (HTTP 429) say which limit was hit and when it resets. The free tier allows only a small number of
+ * requests per model per day, which is not "no credits left": say what happened and what to do about it.
+ */
+function geminiQuotaMessage(rawMessage: string, model: string): string | null {
+  const quotaId = /"quotaId":\s*"([^"]+)"/.exec(rawMessage)?.[1] ?? "";
+  if (!quotaId && !/quota/i.test(rawMessage)) return null;
+  const limit = /"quotaValue":\s*"(\d+)"/.exec(rawMessage)?.[1] ?? /limit: (\d+)/.exec(rawMessage)?.[1];
+  const retry = /"retryDelay":\s*"(\d+(?:\.\d+)?)s"/.exec(rawMessage)?.[1];
+  const wait = retry ? humanDuration(Number(retry)) : null;
+  if (/PerDay/i.test(quotaId)) {
+    return `Google Gemini's daily request limit${limit ? ` (${limit} requests per day)` : ""} for the model "${model}" is used up${wait ? `, and resets in about ${wait}` : ""}. Choose another model or provider in AI Model Settings, or enable billing for the key to remove the limit.`;
+  }
+  if (/PerMinute/i.test(quotaId)) {
+    return `Google Gemini is receiving too many requests for the model "${model}". Wait${wait ? ` about ${wait}` : " a minute"} and try again.`;
+  }
+  return `Google Gemini's quota for the model "${model}" is used up${wait ? `, and resets in about ${wait}` : ""}. Choose another model or provider in AI Model Settings, or check the plan and billing of the key.`;
+}
+
 /**
  * Maps SDK errors from any provider onto a small set of user-facing messages.
  * All three SDKs expose an HTTP `status` on API errors.
@@ -14,6 +39,7 @@ export function toLLMError(
   model: string,
   apiKey: string,
   signal?: AbortSignal,
+  options: { sensitive?: boolean } = {},
 ): LLMError {
   if (err instanceof LLMError) return err;
   // The user pressed Stop (the request's signal was aborted): not a provider failure.
@@ -23,7 +49,10 @@ export function toLLMError(
   const status = typeof (err as { status?: unknown })?.status === "number" ? (err as { status: number }).status : 0;
   const name = err instanceof Error ? err.name : "";
   const rawMessage = err instanceof Error ? err.message : String(err);
-  const detail = redactSecrets(rawMessage, [apiKey]).slice(0, 300);
+  // A request that carries health information keeps the provider's own wording out of the log and out of the error, except for the kinds of
+  // failure that can never quote a request (a rejected key, an unknown model, a quota): a rejected request's message can echo what was sent.
+  const quotes = !options.sensitive || [401, 403, 404, 429].includes(status);
+  const detail = quotes ? redactSecrets(rawMessage, [apiKey]).slice(0, 300) : "(details withheld: the request contained health information)";
 
   // Log the redacted detail server-side for debugging; never log the key or the request.
   console.error(`[llm:${provider}] ${name || "Error"} status=${status || "n/a"}: ${detail}`);
@@ -39,6 +68,10 @@ export function toLLMError(
       "model_not_found",
       `${label} does not recognise the model "${model}", or your key has no access to it. Check the model ID in AI Model Settings.`,
     );
+  }
+  if (status === 429 && provider === "gemini") {
+    const quota = geminiQuotaMessage(rawMessage, model);
+    if (quota) return new LLMError("rate_limit", quota);
   }
   if (status === 429 && /insufficient_quota|credit|billing|exceeded your current quota/i.test(rawMessage)) {
     return new LLMError(

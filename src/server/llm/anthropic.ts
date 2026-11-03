@@ -27,7 +27,7 @@ export function toAnthropicContent(content: ContentPart[]): ContentBlockParam[] 
 
 export const anthropicProvider: LLMProvider = {
   id: "anthropic",
-  async generate({ system, content, model, apiKey, signal, responseFormat }: LLMRequest): Promise<LLMResponse> {
+  async generate({ system, content, model, apiKey, signal, responseFormat, sensitive }: LLMRequest): Promise<LLMResponse> {
     const client = new Anthropic({ apiKey, timeout: LLM_TIMEOUT_MS, maxRetries: 1 });
     const base = {
       model,
@@ -45,7 +45,7 @@ export const anthropicProvider: LLMProvider = {
       if (!text) throw new LLMError("empty_response", "Claude returned an empty answer.");
       return { text };
     } catch (err) {
-      throw toLLMError(err, "anthropic", model, apiKey, signal);
+      throw toLLMError(err, "anthropic", model, apiKey, signal, { sensitive });
     }
   },
 };

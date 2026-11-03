@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ExternalLink, FileText, Filter, MessageSquare, Plus, Search, Trash2 } from "lucide-react";
+import { ClearFailedButton } from "@/components/admin/ClearFailedButton";
 import { UploadDialog } from "@/components/admin/UploadDialog";
 import { useFeatures } from "@/components/features/FeatureProvider";
 import { Alert, Badge, EmptyState, formatBytes, formatDate, PageHeader, RowMenu, Spinner } from "@/components/ui";
 import { api } from "@/lib/api";
 import { INTEGRATION_META } from "@/lib/integrations";
 import { websiteHost } from "@/lib/knowledge-scope";
-import type { DocumentDTO } from "@/lib/types";
+import type { ClearFailedDocumentsDTO, DocumentDTO } from "@/lib/types";
 
 type StatusFilter = "all" | "ready" | "failed" | "reindex";
 
@@ -79,6 +80,16 @@ export default function DocumentsPage() {
     void refresh();
   }
 
+  // Counted over every document, not just the visible ones: the button clears all failed documents
+  // whatever the search box or status filter currently shows.
+  const failedCount = useMemo(() => (documents ?? []).filter((d) => d.status === "failed").length, [documents]);
+
+  function handleCleared(result: ClearFailedDocumentsDTO) {
+    const gone = new Set(result.deletedIds);
+    setDocuments((current) => current && current.filter((d) => !gone.has(d.id)));
+    void refresh(); // re-sync with the server (it may have changed while the request ran)
+  }
+
   return (
     <>
       <PageHeader
@@ -107,7 +118,8 @@ export default function DocumentsPage() {
               {documents ? `${documents.length} file${documents.length === 1 ? "" : "s"} in your knowledge base` : "Loading…"}
             </p>
           </div>
-          <div className="flex w-full items-center gap-2 sm:w-auto">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+            <ClearFailedButton failedCount={failedCount} onCleared={handleCleared} />
             <label className="relative flex-1 sm:w-64 sm:flex-none">
               <span className="sr-only">Search files</span>
               <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-slate-400" />

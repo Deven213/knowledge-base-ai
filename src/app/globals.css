@@ -36,6 +36,28 @@ body {
   }
 }
 
+/* Bottom sheet (chat details) — used via motion-safe:animate-[…], so reduced motion skips it. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+/* A short bar sliding across, shown while an answer is being translated. */
+@keyframes language-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
 /* Smooth in-page navigation on the landing page only. */
 @media (prefers-reduced-motion: no-preference) {
   html:has(.landing) {
@@ -83,6 +105,27 @@ body {
   .label {
     @apply mb-1.5 block text-sm font-medium text-slate-700;
   }
+}
+
+/*
+ * A dialog is never taller than the visible screen: 16px of overlay padding above and below (the overlay's p-4), whatever its content.
+ * Taller content scrolls inside the dialog (see Modal in components/ui.tsx), so the header and the action buttons stay on screen.
+ * vh first, for browsers without dynamic viewport units; dvh where it is supported, because it follows the visible area as a phone's
+ * address bar and toolbars slide in and out (100vh would be the tallest the viewport ever gets, which can push the footer off screen).
+ */
+.modal-panel {
+  max-height: calc(100vh - 32px);
+}
+@supports (height: 100dvh) {
+  .modal-panel {
+    max-height: calc(100dvh - 32px);
+  }
+}
+
+/* Letter-spacing pulls apart the joined letter forms of Indic scripts, so the spaced-out small headings stay normal there. */
+:lang(hi) .tracking-wide,
+:lang(gu) .tracking-wide {
+  letter-spacing: normal;
 }
 
 /* Answer text rendered from the model's Markdown. */

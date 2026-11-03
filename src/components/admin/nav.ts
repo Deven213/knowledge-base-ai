@@ -14,6 +14,7 @@ import {
   MessageSquareWarning,
   Plug,
   ScrollText,
+  Stethoscope,
   Users,
   Waypoints,
   type LucideIcon,
@@ -43,11 +44,21 @@ export interface AdminSection {
   planned?: string[];
   /** Child pages shown under the section when it is expanded. */
   children?: AdminSubsection[];
+  /** Only a person with the Doctor role sees it in the menu (the page and the API refuse everyone else on the server as well). */
+  doctorOnly?: boolean;
 }
 
 /** Admin navigation, in the same order as the reference design. */
 export const ADMIN_SECTIONS: AdminSection[] = [
   { slug: "", feature: "dashboard", label: "Dashboard", subtitle: "Overview of your knowledge base", icon: LayoutDashboard, status: "live" },
+  {
+    slug: "consultations", feature: "consultations",
+    label: "Consultations",
+    subtitle: "Record a visit and review the AI's draft of the clinical note",
+    icon: Stethoscope,
+    status: "live",
+    doctorOnly: true,
+  },
   {
     slug: "documents", feature: "documents",
     label: "Documents",

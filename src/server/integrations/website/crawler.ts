@@ -1,5 +1,7 @@
 import "server-only";
-import { IntegrationError } from "../errors";
+import type { SyncItemCategory, SyncItemStage } from "@/lib/integrations";
+import { safeErrorMessage } from "../../security/redact";
+import { FetchError, IntegrationError } from "../errors";
 import { parseHtmlPage } from "./html";
 import type { FetchedResource } from "./safe-fetch";
 
@@ -57,7 +59,10 @@ export function isCrawlableLink(url: string): boolean {
 export type CrawlResult =
   | { kind: "page"; url: string; title: string; text: string }
   | { kind: "file"; url: string; filename: string; buffer: Buffer }
-  | { kind: "failed"; url: string; message: string };
+  /** Reached fine, but it isn't something that can be imported (not an error). */
+  | { kind: "skipped"; url: string; message: string; stage: SyncItemStage; category: SyncItemCategory }
+  /** Could not be loaded; `detail` is the original technical error, free of secrets. */
+  | { kind: "failed"; url: string; message: string; stage: SyncItemStage; category: SyncItemCategory; httpStatus?: number; detail?: string };
 
 export interface CrawlOptions {
   startUrl: string;
@@ -97,7 +102,14 @@ export async function crawl(opts: CrawlOptions): Promise<number> {
     try {
       res = await opts.fetch(url, { checkRedirect });
     } catch (err) {
-      await opts.onResult({ kind: "failed", url, message: err instanceof IntegrationError ? err.message : "Could not load this page." });
+      await opts.onResult(
+        err instanceof FetchError
+          ? { kind: "failed", url, message: err.message, stage: "fetch", category: err.category, httpStatus: err.httpStatus, detail: err.detail }
+          : err instanceof IntegrationError
+            ? { kind: "failed", url, message: err.message, stage: "fetch", category: "other" }
+            // Anything unexpected: keep the original error (redacted) instead of discarding it.
+            : { kind: "failed", url, message: "Could not load this page.", stage: "fetch", category: "other", detail: safeErrorMessage(err) },
+      );
       continue;
     }
 
@@ -122,7 +134,8 @@ export async function crawl(opts: CrawlOptions): Promise<number> {
       continue;
     }
     if (!type.includes("html") && type !== "") {
-      await opts.onResult({ kind: "failed", url: finalUrl, message: `Unsupported content type (${type}).` });
+      // The server answered correctly with something we don't import (an image, JSON, …): skipped, like unsupported files in Drive.
+      await opts.onResult({ kind: "skipped", url: finalUrl, message: `Unsupported content type (${type}).`, stage: "fetch", category: "unsupported_content" });
       continue;
     }
 

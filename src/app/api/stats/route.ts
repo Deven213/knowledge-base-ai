@@ -1,16 +1,18 @@
 import { NextResponse } from "next/server";
 import type { StatsDTO } from "@/lib/types";
 import { internalError, requireFeature } from "@/server/http";
-import { getServices } from "@/server/services";
+import { getTenantServices } from "@/server/services";
+import { withTenant } from "@/server/tenant";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+/** Dashboard numbers for the caller's organization (counts only). */
+export const GET = withTenant("documents:read", async (_request, tenant) => {
   const featureOff = requireFeature("dashboard");
   if (featureOff) return featureOff;
   try {
-    const { documents, conversations, providerConfig, embedder } = getServices();
+    const { documents, conversations, providerConfig, embedder } = getTenantServices(tenant);
     const active = providerConfig.activeProvider();
     const status = providerConfig.status(active);
     const body: StatsDTO = {
@@ -25,4 +27,4 @@ export async function GET() {
   } catch (err) {
     return internalError("GET /api/stats", err);
   }
-}
+});

@@ -4,12 +4,13 @@ import { ATTACHMENT_LIMITS } from "@/lib/attachments";
 import { knowledgeScopeSchema } from "@/lib/knowledge-scope";
 import { LANGUAGE_CODES } from "@/lib/languages";
 import { getFeatureAvailability } from "@/server/features/service";
-import { internalError, jsonError, rejectCrossSite, requireFeature, zodMessage } from "@/server/http";
+import { internalError, jsonError, requireFeature, zodMessage } from "@/server/http";
 import { ingestDocument } from "@/server/knowledge/ingest";
 import { LLMError } from "@/server/llm/types";
 import { AttachmentError, prepareAttachments, type IncomingAttachment } from "@/server/rag/attachments";
 import { AnswerInputError, askInConversation, ConversationNotFoundError } from "@/server/rag/chat";
-import { getServices } from "@/server/services";
+import { getTenantServices } from "@/server/services";
+import { can, withTenant } from "@/server/tenant";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -76,9 +77,7 @@ async function readRequest(request: Request): Promise<{ fields: unknown; files: 
   };
 }
 
-export async function POST(request: Request) {
-  const crossSite = rejectCrossSite(request);
-  if (crossSite) return crossSite;
+export const POST = withTenant("chat", async (request, tenant) => {
   const featureOff = requireFeature("chat");
   if (featureOff) return featureOff;
 
@@ -93,14 +92,25 @@ export async function POST(request: Request) {
 
     const attachments = await prepareAttachments(read.files);
     const features = getFeatureAvailability();
-    // "Add to Knowledge Base" writes documents, so it needs the Documents feature (which needs the Knowledge Base).
-    if (attachments.documents.some((d) => d.addToKnowledgeBase) && !features.documents) {
+    const addsToKnowledgeBase = attachments.documents.some((d) => d.addToKnowledgeBase);
+    // "Add to Knowledge Base" writes documents, so it needs permission to upload.
+    if (addsToKnowledgeBase && !can(tenant, "documents:write")) {
+      return NextResponse.json({ error: "You don't have permission to add documents to the Knowledge Base.", code: "forbidden" }, { status: 403 });
+    }
+    // ...and the Documents feature (which needs the Knowledge Base).
+    if (addsToKnowledgeBase && !features.documents) {
       return NextResponse.json(
         { error: "Adding files to the Knowledge Base is disabled by the administrator.", code: "feature_disabled", feature: "documents" },
         { status: 403 },
       );
     }
-    const services = getServices();
+    const services = getTenantServices(tenant);
+    // Document IDs come from the browser: every one must be a document of the caller's organization. Another
+    // customer's ID is answered exactly like one that doesn't exist, and is never passed to the search.
+    if (fields.documentIds && fields.documentIds.length > 0) {
+      const own = services.documents.existingIds(fields.documentIds);
+      if (fields.documentIds.some((id) => !own.has(id))) return jsonError(404, "Document not found.");
+    }
     const result = await askInConversation(
       { ...services, addToKnowledgeBase: features.documents ? (file) => ingestDocument(services, file) : undefined },
       {
@@ -123,4 +133,4 @@ export async function POST(request: Request) {
     }
     return internalError("POST /api/ask", err);
   }
-}
+});

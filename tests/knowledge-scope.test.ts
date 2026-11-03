@@ -9,7 +9,7 @@ import { SqliteVectorStore } from "@/server/knowledge/vector-store";
 import { ProviderConfigService } from "@/server/llm/resolve";
 import type { LLMProvider, LLMRequest } from "@/server/llm/types";
 import { askInConversation } from "@/server/rag/chat";
-import { FakeEmbedder, memoryDb, promptText, testConfig } from "./helpers";
+import { FakeEmbedder, memoryDb, promptText, TEST_ORG, testConfig, testUserId } from "./helpers";
 
 const WEB = randomUUID();
 const DRIVE = randomUUID();
@@ -18,8 +18,8 @@ const DRIVE = randomUUID();
 async function setup() {
   const db = memoryDb();
   const embedder = new FakeEmbedder(["policy", "refund", "quotes", "einstein", "metformin", "dose", "drive", "handbook", "other"]);
-  const vectorStore = new SqliteVectorStore(db);
-  const ingest = { db, embedder, vectorStore, chunkOptions: { chunkSize: 200, overlap: 0 } };
+  const vectorStore = new SqliteVectorStore(db, TEST_ORG);
+  const ingest = { db, embedder, vectorStore, documents: new DocumentRepository(db, TEST_ORG), chunkOptions: { chunkSize: 200, overlap: 0 } };
   const page = (url: string, text: string) =>
     upsertSourceDocument(ingest, {
       filename: "page.txt",
@@ -41,8 +41,8 @@ async function setup() {
 
   const generate = vi.fn(async (_req: LLMRequest) => ({ text: "Answer [1]." }));
   const provider: LLMProvider = { id: "gemini", generate };
-  const conversations = new ConversationRepository(db);
-  const documents = new DocumentRepository(db);
+  const conversations = new ConversationRepository(db, TEST_ORG, testUserId(db));
+  const documents = new DocumentRepository(db, TEST_ORG);
   const deps = {
     embedder,
     vectorStore,

@@ -4,10 +4,11 @@ import { Fragment, type ReactNode } from "react";
 
 /**
  * Minimal, safe Markdown for model answers: paragraphs, bullet/numbered lists,
- * headings, **bold**, `code`, and [n] citation markers. No raw HTML is ever rendered.
+ * headings, **bold**, *italic*, `code`, and [n] citation markers. No raw HTML is ever rendered.
  */
 
-const INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\[\d+(?:\s*[,–-]\s*\d+)*\])/g;
+// **bold** first, then *italic* (the asterisks must hug the text, so "5 * 3 * 2" stays as typed), code, and [n] markers.
+const INLINE = /(\*\*[^*]+\*\*|\*(?!\s)[^*\n]+?(?<!\s)\*|`[^`]+`|\[\d+(?:\s*[,–-]\s*\d+)*\])/g;
 
 function citationNumbers(marker: string, max: number): number[] {
   return marker
@@ -25,22 +26,30 @@ interface InlineOptions {
   titleFor?: (n: number) => string;
   /** Short visible label for a citation (e.g. "p. 6") instead of its number. */
   labelFor?: (n: number) => string;
-  tone?: "light" | "dark";
+  /**
+   * The text sits in an italic block (the clinical note). Values and drug names in **bold** then stand upright, and
+   * *emphasis* reverts to upright too (the usual typographic rule), so they stay easy to find.
+   */
+  italicContext?: boolean;
 }
 
-const CITATION_STYLE = {
-  light: "bg-blue-100 text-blue-700 hover:bg-blue-200",
-  dark: "bg-sky-400/15 text-sky-200 ring-1 ring-sky-300/20 hover:bg-sky-400/25",
-};
+const CITATION_STYLE = "bg-brand-50 text-brand-700 ring-1 ring-brand-500/30 hover:bg-brand-100";
 
 function renderInline(text: string, maxCitation: number, onCite: (n: number) => void, opts: InlineOptions = {}): ReactNode[] {
-  const { titleFor, labelFor, tone = "light" } = opts;
+  const { titleFor, labelFor, italicContext = false } = opts;
   return text.split(INLINE).map((part, i) => {
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
       return (
-        <strong key={i} className={tone === "dark" ? "font-semibold text-orange-200" : undefined}>
+        <strong key={i} className={italicContext ? "font-semibold text-slate-950 not-italic" : "font-semibold"}>
           {part.slice(2, -2)}
         </strong>
+      );
+    }
+    if (part.length > 2 && part.startsWith("*") && part.endsWith("*") && !part.startsWith("**")) {
+      return (
+        <em key={i} className={italicContext ? "font-medium not-italic" : undefined}>
+          {part.slice(1, -1)}
+        </em>
       );
     }
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) return <code key={i}>{part.slice(1, -1)}</code>;
@@ -56,7 +65,7 @@ function renderInline(text: string, maxCitation: number, onCite: (n: number) => 
               onClick={() => onCite(n)}
               title={titleFor?.(n)}
               aria-label={titleFor ? `Source ${n}: ${titleFor(n)}` : `Show source ${n}`}
-              className={`mx-0.5 inline-flex h-[18px] min-w-[18px] -translate-y-px items-center justify-center rounded px-1 align-middle text-[11px] font-semibold whitespace-nowrap ${CITATION_STYLE[tone]}`}
+              className={`mx-0.5 inline-flex h-[18px] min-w-[18px] -translate-y-px items-center justify-center rounded px-1 align-middle text-[11px] font-semibold whitespace-nowrap not-italic ${CITATION_STYLE}`}
             >
               {labelFor?.(n) || n}
             </button>

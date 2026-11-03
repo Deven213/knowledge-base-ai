@@ -1,19 +1,21 @@
 import { NextResponse } from "next/server";
 import { internalError, jsonError, requireFeature } from "@/server/http";
-import { getServices } from "@/server/services";
+import { getTenantServices } from "@/server/services";
+import { withTenant } from "@/server/tenant";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function DELETE(_request: Request, ctx: { params: Promise<{ id: string }> }) {
+/** A document that isn't this organization's is reported exactly like one that doesn't exist. */
+export const DELETE = withTenant<{ id: string }>("documents:delete", async (_request, tenant, ctx) => {
   const featureOff = requireFeature("documents");
   if (featureOff) return featureOff;
   try {
     const { id } = await ctx.params;
-    const { documents } = getServices();
+    const { documents } = getTenantServices(tenant);
     if (!documents.delete(id)) return jsonError(404, "Document not found.");
     return new NextResponse(null, { status: 204 });
   } catch (err) {
     return internalError("DELETE /api/documents/[id]", err);
   }
-}
+});

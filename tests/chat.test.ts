@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
-import { migrate } from "@/server/db/migrate";
+import { MIGRATION_COUNT, migrate } from "@/server/db/migrate";
 import { AppSettingsRepository, ConversationRepository, DocumentRepository } from "@/server/db/repositories";
 import { ingestDocument } from "@/server/knowledge/ingest";
 import { SqliteVectorStore } from "@/server/knowledge/vector-store";
@@ -8,14 +8,14 @@ import { ProviderConfigService } from "@/server/llm/resolve";
 import { LLMError, type LLMProvider, type LLMRequest } from "@/server/llm/types";
 import { askInConversation, ConversationNotFoundError } from "@/server/rag/chat";
 import { parseQuestions, suggestQuestions } from "@/server/rag/suggest";
-import { FakeEmbedder, memoryDb, testConfig } from "./helpers";
+import { FakeEmbedder, memoryDb, TEST_ORG, testConfig, testUserId } from "./helpers";
 
 async function setup(generateText = "Battery warranty is 12 months [1].") {
   const db = memoryDb();
   const embedder = new FakeEmbedder(["refund", "policy", "days", "warranty", "battery", "months"]);
-  const vectorStore = new SqliteVectorStore(db);
+  const vectorStore = new SqliteVectorStore(db, TEST_ORG);
   await ingestDocument(
-    { db, embedder, vectorStore, chunkOptions: { chunkSize: 32, overlap: 0 } },
+    { db, embedder, vectorStore, documents: new DocumentRepository(db, TEST_ORG), chunkOptions: { chunkSize: 32, overlap: 0 } },
     { filename: "policy.txt", buffer: Buffer.from("Refund policy: 30 days.\n\nBattery warranty: 12 months.") },
   );
   const providerConfig = new ProviderConfigService(
@@ -24,7 +24,7 @@ async function setup(generateText = "Battery warranty is 12 months [1].") {
   );
   const generate = vi.fn(async (_req: LLMRequest) => ({ text: generateText }));
   const provider: LLMProvider = { id: "gemini", generate };
-  const conversations = new ConversationRepository(db);
+  const conversations = new ConversationRepository(db, TEST_ORG, testUserId(db));
   const deps = {
     embedder,
     vectorStore,
@@ -95,7 +95,7 @@ describe("suggestions", () => {
       '["What is the refund policy?", "How long is the battery warranty?", "Is there a warranty?"]',
     );
     const deps = {
-      documents: new DocumentRepository(db),
+      documents: new DocumentRepository(db, TEST_ORG),
       settings: new AppSettingsRepository(db),
       providerConfig,
       getProvider: () => ({ id: "gemini" as const, generate }),
@@ -114,7 +114,7 @@ describe("suggestions", () => {
   it("returns [] without calling the LLM when the provider is not ready", async () => {
     const { db, generate, embedder } = await setup();
     const out = await suggestQuestions({
-      documents: new DocumentRepository(db),
+      documents: new DocumentRepository(db, TEST_ORG),
       settings: new AppSettingsRepository(db),
       providerConfig: new ProviderConfigService(db, testConfig({ DEFAULT_AI_PROVIDER: "openai" })),
       getProvider: () => ({ id: "openai" as const, generate }),
@@ -144,6 +144,6 @@ describe("migrations 2-3", () => {
     const cols = (db.prepare("PRAGMA table_info(provider_settings)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toEqual(["provider", "model", "updated_at"]);
     expect(db.prepare("SELECT model FROM provider_settings").get()).toEqual({ model: "kept-model" });
-    expect(db.pragma("user_version", { simple: true })).toBe(9);
+    expect(db.pragma("user_version", { simple: true })).toBe(MIGRATION_COUNT);
   });
 });

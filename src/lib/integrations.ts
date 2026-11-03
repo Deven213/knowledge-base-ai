@@ -77,11 +77,37 @@ export interface SyncRunSummaryDTO {
   errorMessage: string | null;
 }
 
+/** Where in the pipeline an item was last handled: loading the URL, reading the HTML, extracting a file, or indexing. */
+export type SyncItemStage = "fetch" | "parse" | "extract" | "index";
+
+/** Why an item ended the way it did. */
+export type SyncItemCategory =
+  | "http_error" // the site answered with an error status (404, 403, 500, …)
+  | "network" // DNS, connection or TLS problem
+  | "timeout"
+  | "redirect" // too many redirects, or a redirect off the site
+  | "too_large"
+  | "unsupported_content" // reachable, but not a page or document type that can be imported
+  | "no_content" // reachable and readable, but nothing worth indexing (login forms, empty pages)
+  | "unchanged" // already indexed with identical content
+  | "extraction" // a document's text could not be read
+  | "ingestion" // chunking, embedding or storing failed
+  | "other";
+
 export interface SyncRunItemDTO {
   name: string;
   url?: string | null;
   outcome: "added" | "updated" | "skipped" | "failed";
   message?: string | null;
+  // Diagnostics. Runs recorded before they existed simply don't have them.
+  stage?: SyncItemStage;
+  category?: SyncItemCategory;
+  /** HTTP status of the response, when there was one. */
+  httpStatus?: number;
+  /** Original technical error text, with anything that looks like a key or token removed. */
+  detail?: string;
+  /** When the item was handled (ISO time). Every item is tried once; there is no retry. */
+  at?: string;
 }
 
 export interface SyncRunDetailDTO extends SyncRunSummaryDTO {

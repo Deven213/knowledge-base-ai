@@ -23,7 +23,7 @@ export function toOpenAIContent(content: ContentPart[]): ResponseInputContent[] 
 
 export const openaiProvider: LLMProvider = {
   id: "openai",
-  async generate({ system, content, model, apiKey, signal, responseFormat }: LLMRequest): Promise<LLMResponse> {
+  async generate({ system, content, model, apiKey, signal, responseFormat, sensitive }: LLMRequest): Promise<LLMResponse> {
     const client = new OpenAI({ apiKey, timeout: LLM_TIMEOUT_MS, maxRetries: 1 });
     try {
       // No temperature/max token settings: some models (e.g. reasoning models) reject them.
@@ -51,7 +51,7 @@ export const openaiProvider: LLMProvider = {
       if (!text) throw new LLMError("empty_response", "OpenAI returned an empty answer.");
       return { text };
     } catch (err) {
-      throw toLLMError(err, "openai", model, apiKey, signal);
+      throw toLLMError(err, "openai", model, apiKey, signal, { sensitive });
     }
   },
 };

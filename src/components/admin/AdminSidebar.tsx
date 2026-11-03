@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { ChevronDown, Menu, MessageSquare, Settings, ShieldCheck, X } from "lucide-react";
+import { Building2, ChevronDown, Menu, MessageSquare, Settings, ShieldCheck, X } from "lucide-react";
 import { useFeatures } from "../features/FeatureProvider";
 import { Logo } from "../Logo";
 import { LogoutButton } from "../LogoutButton";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { INTEGRATION_META } from "@/lib/integrations";
 import { ADMIN_SECTIONS, sectionHref, type AdminSection } from "./nav";
 
@@ -72,17 +73,32 @@ function SectionGroup({ section, onNavigate }: { section: AdminSection; onNaviga
 
 const SETTINGS_PAGES = [
   { href: "/settings/general", label: "General" },
+  { href: "/settings/team", label: "Team" },
   { href: "/settings/features", label: "Feature Management" },
 ];
 
-function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+/** The signed-in person's workspace, for the sidebar footer. */
+export interface WorkspaceInfo {
+  currentId: string;
+  name: string;
+  /** Plain-language role, e.g. "Owner". */
+  roleLabel: string;
+  all: { id: string; name: string }[];
+  /** Super Admin: shows the customer console link. (Only a convenience: the server checks every platform request.) */
+  isPlatformAdmin: boolean;
+  /** The Doctor role: shows the Consultations link. (Only a convenience: the page and the API check the role on the server.) */
+  canConsult: boolean;
+}
+
+function NavLinks({ onNavigate, isPlatformAdmin, canConsult }: { onNavigate?: () => void; isPlatformAdmin: boolean; canConsult: boolean }) {
   const pathname = usePathname();
   const features = useFeatures();
   const inSettings = pathname.startsWith("/settings");
+  const inPlatform = pathname.startsWith("/platform");
   return (
     <nav className="flex flex-col gap-0.5" aria-label="Admin sections">
       {/* Only sections whose feature is available (switched on and dependencies on). */}
-      {ADMIN_SECTIONS.filter((section) => features[section.feature]).map((section) => {
+      {ADMIN_SECTIONS.filter((section) => features[section.feature] && (!section.doctorOnly || canConsult)).map((section) => {
         if (section.children) return <SectionGroup key={section.slug} section={section} onNavigate={onNavigate} />;
         const href = sectionHref(section);
         const active = href === "/admin" ? pathname === "/admin" : pathname.startsWith(href);
@@ -111,6 +127,17 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
           </Link>
         );
       })}
+
+      {/* The Super Admin's customer console: platform administrators only. */}
+      {isPlatformAdmin && (
+        <>
+          <div className="my-2 border-t border-slate-100" />
+          <Link href="/platform" onClick={onNavigate} aria-current={inPlatform ? "page" : undefined} className={linkClass(inPlatform)}>
+            <Building2 className="h-4 w-4 shrink-0" />
+            <span className="flex-1">Customers</span>
+          </Link>
+        </>
+      )}
 
       {/* Settings is not feature-managed: always visible. */}
       <div className="my-2 border-t border-slate-100" />
@@ -153,7 +180,7 @@ const CHAT_SOURCE_BY_PAGE: [string, string][] = [
   [INTEGRATION_META.onedrive.href, "onedrive"],
 ];
 
-function SidebarBody({ onNavigate, userEmail }: { onNavigate?: () => void; userEmail: string }) {
+function SidebarBody({ onNavigate, userEmail, workspace }: { onNavigate?: () => void; userEmail: string; workspace: WorkspaceInfo }) {
   const chatAvailable = useFeatures().chat;
   const pathname = usePathname();
   const source = CHAT_SOURCE_BY_PAGE.find(([href]) => pathname === href || pathname.startsWith(`${href}/`))?.[1];
@@ -179,16 +206,19 @@ function SidebarBody({ onNavigate, userEmail }: { onNavigate?: () => void; userE
         </div>
       )}
       <div className="flex-1 overflow-y-auto px-3 py-3">
-        <NavLinks onNavigate={onNavigate} />
+        <NavLinks onNavigate={onNavigate} isPlatformAdmin={workspace.isPlatformAdmin} canConsult={workspace.canConsult} />
       </div>
+      <WorkspaceSwitcher currentId={workspace.currentId} workspaces={workspace.all} />
       <div className="flex items-center gap-3 border-t border-slate-100 px-4 py-3">
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">
-          A
+          {userEmail.charAt(0).toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-slate-800">Administrator</p>
+          <p className="truncate text-sm font-medium text-slate-800" title={workspace.name}>
+            {workspace.name}
+          </p>
           <p className="truncate text-xs text-slate-500" title={userEmail}>
-            {userEmail}
+            {workspace.roleLabel} · {userEmail}
           </p>
         </div>
         <LogoutButton compact />
@@ -197,13 +227,13 @@ function SidebarBody({ onNavigate, userEmail }: { onNavigate?: () => void; userE
   );
 }
 
-export function AdminSidebar({ userEmail }: { userEmail: string }) {
+export function AdminSidebar({ userEmail, workspace }: { userEmail: string; workspace: WorkspaceInfo }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       {/* Desktop */}
       <aside className="sticky top-0 hidden h-screen w-76 shrink-0 border-r border-slate-200 bg-white lg:block">
-        <SidebarBody userEmail={userEmail} />
+        <SidebarBody userEmail={userEmail} workspace={workspace} />
       </aside>
 
       {/* Mobile top bar + drawer */}
@@ -225,7 +255,7 @@ export function AdminSidebar({ userEmail }: { userEmail: string }) {
             >
               <X className="h-4 w-4" />
             </button>
-            <SidebarBody userEmail={userEmail} onNavigate={() => setOpen(false)} />
+            <SidebarBody userEmail={userEmail} workspace={workspace} onNavigate={() => setOpen(false)} />
           </aside>
         </div>
       )}

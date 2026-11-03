@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { parseAIResponse } from "@/lib/ai-response";
 import { getLanguage, LANGUAGES } from "@/lib/languages";
 import type { CitationDTO } from "@/lib/types";
-import { ConversationRepository } from "@/server/db/repositories";
+import { ConversationRepository, DocumentRepository } from "@/server/db/repositories";
 import { toMessageDTO } from "@/server/dto";
 import { ingestDocument } from "@/server/knowledge/ingest";
 import { SqliteVectorStore } from "@/server/knowledge/vector-store";
@@ -13,7 +13,7 @@ import { askInConversation } from "@/server/rag/chat";
 import { buildSystemPrompt } from "@/server/rag/prompt";
 import { needsEnglishSearchQuery } from "@/server/rag/query-translation";
 import { buildSources, normalizeModelAnswer, parseModelJson, RESPONSE_FORMAT, structuredToText } from "@/server/rag/structured";
-import { FakeEmbedder, memoryDb, testConfig } from "./helpers";
+import { FakeEmbedder, memoryDb, TEST_ORG, testConfig, testUserId } from "./helpers";
 
 const citation = (over: Partial<CitationDTO>): CitationDTO => ({
   index: 1,
@@ -139,15 +139,15 @@ describe("languages and prompts", () => {
 async function setup(reply: (req: LLMRequest) => string) {
   const db = memoryDb();
   const embedder = new FakeEmbedder(["metformin", "reactions", "diarrhea", "nausea", "dose"]);
-  const vectorStore = new SqliteVectorStore(db);
+  const vectorStore = new SqliteVectorStore(db, TEST_ORG);
   await ingestDocument(
-    { db, embedder, vectorStore, chunkOptions: { chunkSize: 60, overlap: 0 } },
+    { db, embedder, vectorStore, documents: new DocumentRepository(db, TEST_ORG), chunkOptions: { chunkSize: 60, overlap: 0 } },
     { filename: "Metformin.pdf.txt", buffer: Buffer.from("Metformin reactions: diarrhea and nausea.\n\nMissed dose: take it when remembered.") },
   );
   const providerConfig = new ProviderConfigService(db, testConfig({ GEMINI_API_KEY: "AIza-test-key-12345678", GEMINI_MODEL: "g", DEFAULT_AI_PROVIDER: "gemini" }));
   const generate = vi.fn(async (req: LLMRequest) => ({ text: reply(req) }));
   const provider: LLMProvider = { id: "gemini", generate };
-  const conversations = new ConversationRepository(db);
+  const conversations = new ConversationRepository(db, TEST_ORG, testUserId(db));
   const deps = { embedder, vectorStore, providerConfig, conversations, getProvider: () => provider, retrieval: { topK: 3, minScore: 0.2 } };
   return { deps, generate, conversations };
 }

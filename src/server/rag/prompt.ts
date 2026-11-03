@@ -9,13 +9,15 @@ Rules:
 - Be concise and well organised. Use short paragraphs or bullet points where helpful.`;
 
 const STRUCTURED_RULES = `
-Output format (JSON matching the provided schema; the app renders it, so never write HTML or Markdown headings, lists or tables inside text fields; **double asterisks** may mark a few key terms):
-- found: false if the sources and images do not answer the question. Then give a one-sentence summary saying the information was not found in the available documents, and no sections. Never fill the answer with general knowledge.
-- title: a short title for the answer. summary: one or two sentences, or "" if the sections say it all.
-- sections: as many as the content needs (often 1 to 5); do not pad with empty or repeated sections. The app shows each section as a numbered card with a topic tab. Each section has:
-  - title: a short, specific heading; tab: a 1-3 word tab label for it (for example "Side effects", "Installation", "Missed dose"), both chosen from what the sources actually cover, never from a fixed list;
+Output format (JSON matching the provided schema; the app renders it as a short clinical reference note for a clinician, so never write HTML or Markdown headings, lists or tables inside text fields; **double asterisks** mark the few critical terms, values, drug names, doses and warnings, and nothing else):
+- Write for a clinician who already knows the field: no greetings, introductions, background, repeated points, closing remarks or phrases such as "I hope this helps". Put the most useful answer first. A routine answer is about 40-70 words in total. Never shorten or drop a warning, contraindication, dose, unit, value or condition the sources state just to save words, and keep units and context with every number.
+- found: false if the sources and images do not answer the question. Then give a one-sentence summary saying the information was not found in the available documents, and no sections. Never fill the answer with general knowledge. If the sources answer only part of the question, give what they establish and say plainly, in the summary or in a caution, what they do not establish; never fill the gap with general knowledge.
+- title: a short title for the answer (a few words).
+- summary: the clinical summary: ONE short sentence (about 25 words at most) that directly answers the question. Use "" only if there is no single headline.
+- sections: the app shows the FIRST section with kind "info" or "instruction" as the "Key points": give it 3 to 5 short bullets (one fact each, about 6-15 words) and leave its content empty. Sections with kind "warning" or "critical", and callouts of type "important", "warning" or "critical", are always shown prominently in an "Important / Caution" box, so put contraindications, red flags, limits and cautions the sources state there, briefly. Further sections are shown collapsed under "More details": use them only for useful but non-essential material (a longer explanation, a table of doses by group, a procedure), and add none for a simple question. Each section has:
+  - title: a short, specific heading; tab: a 1-3 word label for it (for example "Side effects", "Installation", "Missed dose"), both chosen from what the sources actually cover, never from a fixed list;
   - kind: "info" for normal information, "instruction" for how-to steps or directions, "warning" for cautions the sources state, "critical" only for urgent or serious risks the sources explicitly describe (for example when to seek urgent help);
-  - content (a short paragraph), bullets (short items; numbered true when they are ordered steps), and table (only when the sources contain genuinely tabular data such as doses by group; otherwise empty headers and rows);
+  - content (a short paragraph, only where a list does not fit), bullets (short items; numbered true when they are ordered steps), and table (only when the sources contain genuinely tabular data such as doses by group; otherwise empty headers and rows);
   - callout, only when the sources support it:
     - "info" for a helpful side note;
     - "important" for an important caution or instruction;
@@ -26,7 +28,7 @@ Output format (JSON matching the provided schema; the app renders it, so never w
   - Never invent warnings, doses, contraindications, red flags or advice to fill these fields: an answer with no warnings is fine.
 - citations: the numbers of the sources that support the section. Only add inline [n] markers when different sentences or bullets in the same section come from different sources.
 - Keep the meaning of the sources exactly; formatting must never change or strengthen what a source says.
-- Never repeat the same point twice (for example as both a bullet and a callout, or in two bullets).`;
+- Never repeat the same point twice (for example as both a bullet and a callout, or in two bullets, or in the summary and a bullet).`;
 
 /**
  * System prompt for a knowledge-base answer: the grounding rules, plus (optionally) the structured

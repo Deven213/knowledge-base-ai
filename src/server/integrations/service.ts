@@ -16,7 +16,8 @@ import {
 } from "@/lib/integrations";
 import type { AppConfig } from "../config";
 import { upsertSourceDocument, type IngestDeps, type UpsertResult } from "../knowledge/ingest";
-import { DocumentRepository, type DocumentSource } from "../db/repositories";
+import { redactSecrets } from "../security/redact";
+import type { DocumentSource } from "../db/repositories";
 import { googleDrive, oneDrive, type CloudDrive, type CloudFile } from "./cloud";
 import { IntegrationAuthError, IntegrationError } from "./errors";
 import { buildAuthorizeUrl, createPkce, exchangeCode, oauthStatus, providerLabel, revokeTokens, statesMatch, TokenStore, type OAuthType } from "./oauth";
@@ -29,6 +30,8 @@ const SUPPORTED_FILE = /\.(pdf|docx|txt|md|markdown)$/i;
 const MIN_PAGE_TEXT = 40;
 
 export interface IntegrationServiceDeps extends IngestDeps {
+  /** The organization this service works for. Everything it reads or writes belongs to it. */
+  orgId: string;
   config: AppConfig;
   /** Injectable for tests; production uses safeFetch / the real APIs / encrypted token storage. */
   fetchPage?: (url: string, opts: { checkRedirect: (u: URL) => string | null }) => Promise<FetchedResource>;
@@ -63,7 +66,7 @@ export class IntegrationService {
   private readonly featureOn: (key: Parameters<typeof isFeatureEnabled>[0]) => boolean;
 
   constructor(private readonly deps: IntegrationServiceDeps) {
-    this.repo = new IntegrationRepository(deps.db);
+    this.repo = new IntegrationRepository(deps.db, deps.orgId);
     this.tokens = new TokenStore(this.repo, deps.config);
     this.drives = deps.drives ?? { google_drive: googleDrive, onedrive: oneDrive };
     this.featureOn = deps.isFeatureEnabled ?? isFeatureEnabled;
@@ -215,8 +218,20 @@ export class IntegrationService {
     const totals: RunTotals = { found: 0, added: 0, updated: 0, skipped: 0, failed: 0 };
     const items: SyncRunItemDTO[] = [];
     const record = (item: SyncRunItemDTO) => {
-      items.push(item);
-      totals[item.outcome === "added" ? "added" : item.outcome === "updated" ? "updated" : item.outcome === "skipped" ? "skipped" : "failed"]++;
+      const entry: SyncRunItemDTO = { ...item, at: item.at ?? new Date().toISOString() };
+      items.push(entry);
+      totals[entry.outcome === "added" ? "added" : entry.outcome === "updated" ? "updated" : entry.outcome === "skipped" ? "skipped" : "failed"]++;
+      // A failed item is always logged with where and why it failed (never keys or tokens), not only counted.
+      if (entry.outcome === "failed") {
+        console.warn(`[integrations] ${row.type} sync ${runId}: item failed`, {
+          url: entry.url,
+          stage: entry.stage,
+          category: entry.category,
+          httpStatus: entry.httpStatus,
+          message: redactSecrets(entry.message ?? ""),
+          detail: entry.detail ? redactSecrets(entry.detail) : undefined,
+        });
+      }
       this.repo.updateRunProgress(runId, totals);
     };
 
@@ -258,6 +273,14 @@ export class IntegrationService {
     const maxBytes = this.deps.config.MAX_UPLOAD_MB * 1024 * 1024;
     const fetchPage = this.deps.fetchPage ?? ((u: string, o: { checkRedirect: (u: URL) => string | null }) => safeFetch(u, { maxBytes, checkRedirect: o.checkRedirect }));
 
+    // Pages that loaded fine but had nothing worth indexing, and items that now have (or already had) indexed content.
+    let empty = 0;
+    let withContent = 0;
+    const fromUpsert = (name: string, url: string, res: UpsertResult): SyncRunItemDTO => {
+      if (res.outcome === "added" || res.outcome === "updated" || res.category === "unchanged") withContent++;
+      return { name, url, outcome: res.outcome, message: res.message, category: res.category, stage: res.stage, detail: res.detail };
+    };
+
     await crawl({
       startUrl: validatePublicUrl(config.url ?? "").href,
       depth: config.depth ?? 1,
@@ -268,22 +291,44 @@ export class IntegrationService {
         const source: DocumentSource = { type: "website", externalId: r.url, url: r.url, integrationId: row.id };
         const u = new URL(r.url);
         const where = `${u.hostname}${u.pathname === "/" ? "" : u.pathname}`;
-        if (r.kind === "failed") return record({ name: where, url: r.url, outcome: "failed", message: r.message });
+        if (r.kind === "failed") {
+          return record({ name: where, url: r.url, outcome: "failed", message: r.message, stage: r.stage, category: r.category, httpStatus: r.httpStatus, detail: r.detail });
+        }
+        if (r.kind === "skipped") return record({ name: where, url: r.url, outcome: "skipped", message: r.message, stage: r.stage, category: r.category });
 
         let res: UpsertResult;
         if (r.kind === "page") {
-          if (r.text.length < MIN_PAGE_TEXT) return record({ name: r.title || where, url: r.url, outcome: "failed", message: "No readable content was found on this page." });
+          if (r.text.length < MIN_PAGE_TEXT) {
+            // The page loaded and parsed fine; there is just nothing to index (a login form, a search page, an empty shell).
+            // That is not an error, so it is skipped with the reason, like unsupported files in Drive. If NO page has
+            // content, the run fails below, so a site this scraper can't read is never reported as a success.
+            empty++;
+            return record({
+              name: r.title || where,
+              url: r.url,
+              outcome: "skipped",
+              stage: "parse",
+              category: "no_content",
+              message: `No readable content: only ${r.text.length} character${r.text.length === 1 ? "" : "s"} of text remain after removing navigation, forms and scripts (at least ${MIN_PAGE_TEXT} are needed). Login pages, search forms and empty pages look like this.`,
+            });
+          }
           const name = (r.title ? `${r.title} — ${where}` : where).slice(0, 200);
           // Plain text through the existing TXT ingestion: title and URL first, then the page content.
           res = await this.ingest(source, "page.txt", name, Buffer.from(`${r.title}\nSource: ${r.url}\n\n${r.text}`, "utf8"));
-          return record({ name, url: r.url, outcome: res.outcome, message: res.message });
+          return record(fromUpsert(name, r.url, res));
         }
-        if (r.buffer.length > maxBytes) return record({ name: r.filename, url: r.url, outcome: "skipped", message: `Larger than ${this.deps.config.MAX_UPLOAD_MB} MB.` });
+        if (r.buffer.length > maxBytes) {
+          return record({ name: r.filename, url: r.url, outcome: "skipped", stage: "fetch", category: "too_large", message: `Larger than ${this.deps.config.MAX_UPLOAD_MB} MB.` });
+        }
         res = await this.ingest(source, r.filename, r.filename, r.buffer);
-        record({ name: r.filename, url: r.url, outcome: res.outcome, message: res.message });
+        record(fromUpsert(r.filename, r.url, res));
       },
     });
     if (totals.found === 0) throw new IntegrationError("No pages could be crawled from this website.");
+    // Only when nothing else explains the empty result: real failures are reported as failures, with their own details.
+    if (empty > 0 && withContent === 0 && totals.failed === 0) {
+      throw new IntegrationError(`No readable content was found on any of the ${empty} page${empty === 1 ? "" : "s"} that loaded. The site may build its pages with JavaScript, which the scraper can't run.`);
+    }
   }
 
   private async syncCloud(row: IntegrationRow, totals: RunTotals, record: (i: SyncRunItemDTO) => void): Promise<void> {
@@ -291,7 +336,7 @@ export class IntegrationService {
     const drive = this.drives[type];
     const config = this.repo.config(row);
     const maxBytes = this.deps.config.MAX_UPLOAD_MB * 1024 * 1024;
-    const docs = new DocumentRepository(this.deps.db);
+    const docs = this.deps.documents;
 
     let token = await this.accessToken(row);
     let files: CloudFile[];

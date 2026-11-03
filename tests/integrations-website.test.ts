@@ -1,24 +1,26 @@
-import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DocumentRepository } from "@/server/db/repositories";
 import { upsertSourceDocument, type SourceFile } from "@/server/knowledge/ingest";
 import { SqliteVectorStore } from "@/server/knowledge/vector-store";
-import { IntegrationError } from "@/server/integrations/errors";
+import { FetchError, IntegrationError } from "@/server/integrations/errors";
 import { IntegrationService } from "@/server/integrations/service";
 import { crawl, isCrawlableLink, isSameSite, normalizeUrl, type CrawlResult } from "@/server/integrations/website/crawler";
 import { parseHtmlPage } from "@/server/integrations/website/html";
 import { isPublicAddress, validatePublicUrl, type FetchedResource } from "@/server/integrations/website/safe-fetch";
-import { FakeEmbedder, memoryDb, testConfig } from "./helpers";
+import type { Embedder } from "@/server/knowledge/embedder";
+import { FakeEmbedder, memoryDb, TEST_ORG, testConfig } from "./helpers";
 
 const VOCAB = ["refund", "policy", "shipping", "warranty", "battery", "pricing", "support"];
 
 function setup(fetchPage?: (url: string) => Promise<FetchedResource>) {
   const db = memoryDb();
   const embedder = new FakeEmbedder(VOCAB);
-  const vectorStore = new SqliteVectorStore(db);
-  const deps = { db, embedder, vectorStore, chunkOptions: { chunkSize: 200, overlap: 0 } };
-  const service = new IntegrationService({ ...deps, config: testConfig(), fetchPage, isFeatureEnabled: () => true });
+  const vectorStore = new SqliteVectorStore(db, TEST_ORG);
+  const deps = { db, embedder, vectorStore, documents: new DocumentRepository(db, TEST_ORG), chunkOptions: { chunkSize: 200, overlap: 0 } };
+  const service = new IntegrationService({ ...deps, orgId: TEST_ORG, config: testConfig(), fetchPage, isFeatureEnabled: () => true });
   const chunkCount = (docId: string) => (db.prepare("SELECT COUNT(*) AS n FROM chunks WHERE document_id = ?").get(docId) as { n: number }).n;
-  return { db, deps, service, docs: new DocumentRepository(db), chunkCount };
+  return { db, deps, service, docs: new DocumentRepository(db, TEST_ORG), chunkCount };
 }
 
 const html = (title: string, body: string, links: string[] = []) =>
@@ -184,7 +186,7 @@ describe("upsertSourceDocument (existing pipeline, no duplicates)", () => {
 
   it("adds, skips unchanged, updates changed, and keeps the old version when extraction fails", async () => {
     const { db, deps, docs, chunkCount } = setup();
-    db.prepare("INSERT INTO integration_connections (id, type, name, status) VALUES ('int-1', 'website', 'Website', 'connected')").run();
+    db.prepare("INSERT INTO integration_connections (id, org_id, type, name, status) VALUES ('int-1', ?, 'website', 'Website', 'connected')").run(TEST_ORG);
 
     const first = await upsertSourceDocument(deps, file("Refund policy: refunds within 30 days."));
     expect(first.outcome).toBe("added");
@@ -267,5 +269,181 @@ describe("website sync (service)", () => {
     const result = await service.runSync(service.get(website.id), run.id);
     expect(result.status).toBe("error");
     expect(service.list().find((i) => i.id === website.id)?.status).toBe("error");
+  });
+});
+
+describe("website sync outcomes and run diagnostics", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  // The real page at https://quotes.toscrape.com/login: a header, a login form and a footer, nothing to index.
+  const LOGIN_HTML = readFileSync(new URL("./stubs/quotes-login.html", import.meta.url), "utf8");
+  const HOME = html("Quotes", "Famous quotes by well-known authors about life, thinking and change.", ["/login"]);
+
+  function prepare(fetchPage: (url: string) => Promise<FetchedResource>, embedder: Embedder = new FakeEmbedder(VOCAB)) {
+    const db = memoryDb();
+    const deps = { db, embedder, vectorStore: new SqliteVectorStore(db, TEST_ORG), documents: new DocumentRepository(db, TEST_ORG), chunkOptions: { chunkSize: 200, overlap: 0 } };
+    const service = new IntegrationService({ ...deps, orgId: TEST_ORG, config: testConfig(), fetchPage, isFeatureEnabled: () => true });
+    const website = service.list().find((i) => i.type === "website")!;
+    service.update(website.id, { enabled: true, configuration: { url: "https://example.com/", depth: 1, maxPages: 10 } });
+    const sync = async () => {
+      const run = service.repo.startRun(website.id);
+      const result = await service.runSync(service.get(website.id), run.id);
+      return { result, items: service.runDetail(result.id).items };
+    };
+    return { db, service, website, sync, docs: new DocumentRepository(db, TEST_ORG) };
+  }
+
+  /** The run's counters must always equal the tally of its recorded items. */
+  const tally = (items: { outcome: string }[]) => ({
+    added: items.filter((i) => i.outcome === "added").length,
+    updated: items.filter((i) => i.outcome === "updated").length,
+    skipped: items.filter((i) => i.outcome === "skipped").length,
+    failed: items.filter((i) => i.outcome === "failed").length,
+  });
+
+  it("a login-form page is skipped as 'no content' (the real quotes.toscrape.com /login), not reported as a failure", async () => {
+    const { sync, service, website } = prepare(fakeSite({ "https://example.com/": HOME, "https://example.com/login": LOGIN_HTML }).fetch);
+
+    const { result, items } = await sync();
+
+    expect(result).toMatchObject({ status: "success", filesFound: 2, filesAdded: 1, filesUpdated: 0, filesSkipped: 1, filesFailed: 0, errorMessage: null });
+    const login = items.find((i) => i.url === "https://example.com/login")!;
+    expect(login).toMatchObject({ outcome: "skipped", stage: "parse", category: "no_content" });
+    expect(login.message).toMatch(/No readable content: only 23 characters of text remain after removing navigation, forms and scripts/);
+    expect(login.at).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/);
+    expect(service.list().find((i) => i.id === website.id)).toMatchObject({ status: "success", lastError: null });
+    expect(tally(items)).toEqual({ added: result.filesAdded, updated: result.filesUpdated, skipped: result.filesSkipped, failed: result.filesFailed });
+  });
+
+  it("a second sync reports pages it already has as 'unchanged', keeps the form page as 'no content', and adds nothing twice", async () => {
+    const { sync, docs } = prepare(fakeSite({ "https://example.com/": HOME, "https://example.com/login": LOGIN_HTML }).fetch);
+    await sync();
+
+    const { result, items } = await sync();
+
+    expect(result).toMatchObject({ status: "success", filesFound: 2, filesAdded: 0, filesUpdated: 0, filesSkipped: 2, filesFailed: 0 });
+    expect(items.map((i) => i.category).sort()).toEqual(["no_content", "unchanged"]);
+    expect(items.find((i) => i.category === "unchanged")).toMatchObject({ outcome: "skipped", message: "Unchanged" });
+    expect(docs.list().filter((d) => d.source_type === "website")).toHaveLength(1);
+    expect(tally(items)).toEqual({ added: 0, updated: 0, skipped: 2, failed: 0 });
+  });
+
+  it("a site where no page has any content (a JavaScript-only shell) fails with an explanation instead of reporting success", async () => {
+    const shell = "<html><head><title>App</title></head><body><div id='root'></div><script src='/app.js'></script></body></html>";
+    const { sync, service, website } = prepare(fakeSite({ "https://example.com/": shell }).fetch);
+
+    const { result, items } = await sync();
+
+    expect(result).toMatchObject({ status: "error", filesFound: 1, filesAdded: 0, filesSkipped: 1, filesFailed: 0 });
+    expect(result.errorMessage).toMatch(/No readable content was found on any of the 1 page that loaded.*JavaScript/);
+    expect(items[0]).toMatchObject({ outcome: "skipped", category: "no_content" }); // the item is still there to inspect
+    expect(service.list().find((i) => i.id === website.id)).toMatchObject({ status: "error" });
+  });
+
+  it("an HTTP error page is a real failure with its stage, category, status code, original error and time, and it is logged", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const gone = new FetchError("The website returned HTTP 404 (page not found).", "http_error", 404, "HTTP 404 Not Found");
+    const { sync } = prepare(
+      fakeSite({ "https://example.com/": html("Home", "Welcome to the home page of this example site, with several links.", ["/gone"]), "https://example.com/gone": gone }).fetch,
+    );
+
+    const { result, items } = await sync();
+
+    expect(result).toMatchObject({ status: "partial", filesFound: 2, filesAdded: 1, filesFailed: 1, errorMessage: "1 item(s) failed. See the run details." });
+    const failed = items.find((i) => i.outcome === "failed")!;
+    expect(failed).toMatchObject({
+      url: "https://example.com/gone",
+      stage: "fetch",
+      category: "http_error",
+      httpStatus: 404,
+      message: "The website returned HTTP 404 (page not found).",
+      detail: "HTTP 404 Not Found",
+    });
+    expect(failed.at).toBeTruthy();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("item failed"),
+      expect.objectContaining({ url: "https://example.com/gone", stage: "fetch", category: "http_error", httpStatus: 404 }),
+    );
+  });
+
+  it("an unreachable website fails the run, with the network error recorded", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const down = new FetchError("The website example.com could not be found.", "network", undefined, "ENOTFOUND: getaddrinfo ENOTFOUND example.com");
+    const { sync } = prepare(fakeSite({ "https://example.com/": down }).fetch);
+
+    const { result, items } = await sync();
+
+    expect(result).toMatchObject({ status: "error", filesFound: 1, filesFailed: 1, errorMessage: "All 1 item(s) failed. See the run details." });
+    expect(items[0]).toMatchObject({ outcome: "failed", stage: "fetch", category: "network", detail: expect.stringContaining("ENOTFOUND") });
+  });
+
+  it("an unexpected exception keeps its original error in the details, with keys and tokens removed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const boom = new Error("socket hang up calling https://x.test/?api_key=SECRETVALUE12345 using sk-abcdefghijklmnopqrstuvwxyz123456");
+    const { sync } = prepare(fakeSite({ "https://example.com/": HOME, "https://example.com/login": boom }).fetch);
+
+    const { items } = await sync();
+
+    const failed = items.find((i) => i.outcome === "failed")!;
+    expect(failed).toMatchObject({ message: "Could not load this page.", stage: "fetch", category: "other" });
+    expect(failed.detail).toContain("socket hang up");
+    expect(failed.detail).toContain("[REDACTED]");
+    expect(JSON.stringify(items)).not.toMatch(/SECRETVALUE12345|sk-abcdefghij/);
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/SECRETVALUE12345|sk-abcdefghij/);
+  });
+
+  it("a response that isn't a page or document is skipped as unsupported content, not failed", async () => {
+    const fetchPage = vi.fn(
+      async (url: string): Promise<FetchedResource> =>
+        url.endsWith("/data")
+          ? { url, status: 200, contentType: "application/json", body: Buffer.from("{}") }
+          : { url, status: 200, contentType: "text/html", body: Buffer.from(html("Home", "A home page with enough readable text to be indexed.", ["/data"])) },
+    );
+    const { sync } = prepare(fetchPage);
+
+    const { result, items } = await sync();
+
+    expect(result).toMatchObject({ status: "success", filesAdded: 1, filesSkipped: 1, filesFailed: 0 });
+    expect(items.find((i) => i.url === "https://example.com/data")).toMatchObject({
+      outcome: "skipped",
+      stage: "fetch",
+      category: "unsupported_content",
+      message: "Unsupported content type (application/json).",
+    });
+  });
+
+  it("an embedding failure is a failure at the indexing stage; the pipeline error is kept (redacted) and no document is stored", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const broken: Embedder = {
+      modelId: "test-embedder",
+      embedDocuments: async () => {
+        throw new Error("Embedding service rejected the request: Authorization: Bearer abcdefghijklmnop1234567890");
+      },
+      embedQuery: async () => new Float32Array(1),
+    };
+    const { sync, docs } = prepare(fakeSite({ "https://example.com/": HOME, "https://example.com/login": LOGIN_HTML }).fetch, broken);
+
+    const { result, items } = await sync();
+
+    expect(result).toMatchObject({ status: "partial", filesFound: 2, filesAdded: 0, filesSkipped: 1, filesFailed: 1 });
+    const failed = items.find((i) => i.outcome === "failed")!;
+    expect(failed).toMatchObject({ stage: "index", category: "ingestion", message: "Processing failed due to an internal error." });
+    expect(failed.detail).toContain("Embedding service rejected the request");
+    expect(failed.detail).not.toContain("abcdefghijklmnop1234567890");
+    expect(docs.list().filter((d) => d.source_type === "website")).toHaveLength(0);
+  });
+
+  it("the Test button still reports a page with no readable content as an error", async () => {
+    const { service } = prepare(fakeSite({ "https://example.com/login": LOGIN_HTML }).fetch);
+    await expect(service.testWebsite("https://example.com/login")).rejects.toThrow("No readable content was found on this page.");
+  });
+
+  it("history recorded before the diagnostics existed still opens", () => {
+    const { db, service, website } = prepare(fakeSite({}).fetch);
+    const legacy = [{ name: "quotes.toscrape.com/login", url: "https://quotes.toscrape.com/login", outcome: "failed", message: "No readable content was found on this page." }];
+    db.prepare("INSERT INTO integration_sync_runs (id, integration_id, status, files_found, files_failed, details_json) VALUES ('old', ?, 'partial', 1, 1, ?)").run(website.id, JSON.stringify(legacy));
+
+    expect(service.runDetail("old").items).toEqual(legacy);
   });
 });

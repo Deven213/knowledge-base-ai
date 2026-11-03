@@ -2,6 +2,8 @@ import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
+  // Component tests (.tsx) use the automatic JSX runtime, like Next.js does.
+  oxc: { jsx: { runtime: "automatic" } },
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
@@ -9,5 +11,6 @@ export default defineConfig({
       "server-only": fileURLToPath(new URL("./tests/stubs/server-only.ts", import.meta.url)),
     },
   },
-  test: { environment: "node", include: ["tests/**/*.test.ts"] },
+  // Server tests run in Node; component tests opt into jsdom with `// @vitest-environment jsdom`.
+  test: { environment: "node", include: ["tests/**/*.test.{ts,tsx}"] },
 });
